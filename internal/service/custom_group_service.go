@@ -76,6 +76,22 @@ func (s *CustomGroupService) List() ([]database.CustomPolicyGroup, error) {
 	return s.db.ListCustomGroups()
 }
 
+// Get returns one stored group by id; the second return is false when the id
+// names no record (the icon endpoints use it to refuse uploads for a group
+// that does not exist).
+func (s *CustomGroupService) Get(id string) (*database.CustomPolicyGroup, bool) {
+	groups, err := s.db.ListCustomGroups()
+	if err != nil {
+		return nil, false
+	}
+	for i := range groups {
+		if groups[i].ID == id {
+			return &groups[i], true
+		}
+	}
+	return nil, false
+}
+
 // normalizeDomains trims, lowercases and drops blanks and duplicates. An empty
 // result is an error: a group that matches nothing is a mistake, not a rule.
 func normalizeDomains(in []string) ([]string, error) {

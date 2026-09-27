@@ -1,7 +1,7 @@
 # ⚡ هایپردی‌ان‌اس (HyperDNS) — گیت‌وی گیمینگ و اسمارت دی‌ان‌اس مستقل HyperRAIN
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Release-v2.6.0-00f0ff?style=for-the-badge&logo=rocket" alt="نسخه v2.2.0">
+  <img src="https://img.shields.io/badge/Release-v2.7.0-00f0ff?style=for-the-badge&logo=rocket" alt="نسخه v2.2.0">
   <img src="https://img.shields.io/badge/Status-Production--Ready%20Beta-amber?style=for-the-badge" alt="وضعیت">
   <img src="https://img.shields.io/badge/Language-Go%201.26-00ADD8?style=for-the-badge&logo=go" alt="Go 1.26">
   <img src="https://img.shields.io/badge/Architecture-Single%20Binary%20(Zero%20CGO)-a855f7?style=for-the-badge" alt="تک‌باینری بدون CGO">
@@ -84,7 +84,7 @@ HyperDNS یک فایل باینری استاتیک و بدون وابستگی ب
 <div dir="ltr">
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/IzumiRain/HyperDNS/v2.6.0-beta.1/scripts/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/IzumiRain/HyperDNS/v2.7.0-beta.1/scripts/install.sh | sudo bash
 ```
 
 </div>
@@ -156,6 +156,7 @@ docker compose up -d
 - **دستیارها و پلتفرم‌های هوش مصنوعی (نسخهٔ ۲.۲.۰):** Copilot, Perplexity, Grok, DeepSeek, Mistral, OpenRouter و موارد بیشتر.
 - **شبکه‌های اجتماعی و پیام‌رسان‌ها (نسخهٔ ۲.۲.۰):** X (توییتر سابق)، Instagram, Facebook, WhatsApp, Telegram, Reddit.
 - **دور زدن تحریم توسعه‌دهندگان (۴۰۳):** Docker Hub, Gradle, Android Developers, NPM, PyPI, OpenAI, Anthropic, Claude, Hugging Face, Cursor, Copilot, Kaggle.
+- **آیکون‌های واقعی پالیسی‌ها (نسخهٔ ۲.۷):** هر کارت پالیسی لوگوی واقعی همان سرویس را نشان می‌دهد (از مجموعهٔ CC0 برای [Simple Icons](https://simpleicons.org)) و برای دسته‌های بدون برند، گلیف متناسب — همهٔ این‌ها داخل باینری کاپذیر شده‌اند، با رنگِ تم پنل سازگارند و هیچ درخواست خارجی‌ای نمی‌سازند. گروه‌های سفارشی نام‌دار هم می‌توانند آیکون آپلودی داشته باشند: **SVG حداکثر ۱۶ کیلوبایت یا PNG حداکثر ۶۴ کیلوبایت**، با اعتبارسنجی سمت سرور (SVG از میان یک allowlist بازتولید می‌شود؛ اسکریپت، event handler و ارجاع خارجی هیچ‌کدام دوام نمی‌آورند) و ذخیره در دیتابیس رمزنگاری‌شده تا بکاپ‌ها خودکار شامل آن‌ها شوند.
 
 ### 🛡️ ۲. رلهٔ پراکسی شفاف SNI (Transparent SNI Proxy)
 - رلهٔ ترافیک در لایه ۴ روی TCP بدون خاتمه دادن به نشست SSL (بدون SSL Termination): ارتباط TLS به‌صورت سرتاسری بین کاربر و سرور اصلی باقی می‌ماند و HyperDNS هرگز کلیدهای رمزنگاری آن را در اختیار ندارد.
@@ -311,6 +312,39 @@ https://<domain>/<admin-path>/login
 - **استریم زندهٔ ترافیک:** نمایش لحظه‌ای کوئری‌های DNS بر بستر استریم Server-Sent Events (SSE).
 - **تنظیمات و گواهی SSL:** مدیریت پورتال مشترکین (عنوان، دامنه، پورت)، ورود دومرحله‌ای، احراز هویت LDAP، پنجرهٔ زمان بیکاری نشست، مسیر مخفی مدیریت، وضعیت گواهی‌های SSL و گیت‌وی REST API (کلید اصلی، وضعیت انتشار عمومی و نمونه‌کدهای آماده).
 
+### 🎨 برندسازی پورتال مشترکین (CSS سفارشی)
+
+در **تنظیمات ← پورتال اشتراک ← CSS سفارشی پورتال** سه منبع برای استایل موجود است: **Inline** (چسباندن CSS)، **فایل محلی** (مسیر مطلق روی سرور، فقط‌خواندنی، حداکثر ۲۵۶ کیلوبایت) و **URL** (استایل‌شیتی `http(s)` که مرورگر بازدیدکننده مستقیماً بار می‌کند — نسخهٔ ۲.۷ این حالت را زیر CSP پنل درست کار می‌کند و فقط همان origin پیکربندی‌شده مجاز می‌شود). CSSهای Inline و فایل محلی پاک‌سازی می‌شوند: خروج از `<style>`/`<script>`، `@import`، `url()` خارجی و `expression()` حذف می‌شوند؛ یعنی فقط شکل‌ها و رنگ‌های شما دوام می‌آورند.
+
+سه نمونهٔ پرکاربرد:
+
+```css
+/* ۱. Inline — برندسازی کل صفحه با دو رنگ و فونت */
+body.portal { background: #0b1220; color: #e2e8f0; }
+.card { border-color: #00f0ff55; border-radius: 16px; }
+.title { font-family: "Vazirmatn", sans-serif; letter-spacing: .02em; }
+```
+
+```css
+/* ۲. Inline — لوگو با data URI، بدون هیچ درخواست خارجی */
+.brand-mark::before {
+  content: "";
+  display: inline-block;
+  width: 96px; height: 32px;
+  background: url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciLz4=') no-repeat center / contain;
+}
+```
+
+```css
+/* ۳. حالت URL — این آدرس را در فیلد CSS URL وارد کنید:
+      https://cdn.yourbrand.com/portal.css                        */
+/* خود آن استایل‌شیت می‌تواند چنین باشد:                          */
+:root { --accent: #22d3ee; }
+.card { box-shadow: 0 0 0 1px var(--accent); }
+```
+
+**آیکون گروه‌ها:** هر گروه سفارشی نام‌دار می‌تواند از ادیتور گروه یک آیکون داشته باشد — **SVG حداکثر ۱۶ کیلوبایت یا PNG حداکثر ۶۴ کیلوبایت (حداکثر ۵۱۲×۵۱۲)**. آپلود سمت سرور از میان یک allowlist بازتولید می‌شود (اسکریپت، هندلر و ارجاع خارجی دوام نمی‌آورند) و در دیتابیس رمزنگاری‌شده ذخیره می‌شود تا بکاپ دیتا به‌طور خودکار شامل آن باشد. راهنمای کامل: [TUTORIAL.fa.md](docs/TUTORIAL.fa.md).
+
 ---
 
 ## 🔌 وب‌سرویس برنامه‌نویسان (Developer REST API)
@@ -322,6 +356,24 @@ HyperDNS یک REST API استاندارد جهت اتصال ربات‌ها و �
 - **مستندات تعاملی Swagger:** در آدرس `/<admin-path>/api/v1/docs` — کافی است روی دکمهٔ **Authorize** کلیک کرده، کلید Master API را از تنظیمات جای‌گذاری کنید تا تمامی اندپوینت‌ها مستقیماً از داخل مرورگر قابل اجرا و تست باشند. باز کردن خود صفحه نیازی به ارسال کلید ندارد.
 - **ارائهٔ کاملاً داخلی و آفلاین:** فایل‌های محیط Swagger UI از مسیر `web/swagger/` (تحت مجوز Apache-2.0) درون خود باینری تعبیه (Embed) شده و از همان سرور سرو می‌شوند؛ بنابراین این صفحه حتی در شبکه‌هایی که دسترسی به CDNهای عمومی ندارند به درستی کار می‌کند و عبارت «۱۰۰٪ مستقل و آفلاین» دربارهٔ تمام اجزای آن صادق است.
 - **مستندات جامع API:** برای جزئیات فنی و مثال‌های کامل، سند [API.md](docs/API.md) را مطالعه کنید.
+
+**نمونه‌های سریع** (به‌جای `$KEY` کلید Master API و به‌جای `$HOST` مقدار `IP:panel-port` را بگذارید):
+
+```bash
+# ساخت مشترک تازه (API v2) — پاسخ شامل لینک پورتال و رمز ثبت است
+curl -s -X POST "https://$HOST/api/v2/clients" \
+  -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+  -d '{"display_name":"Ali","allowed_ips":["185.10.20.30"],"validity_days":30}'
+
+# بررسی انتشار نسخهٔ تازه‌تر هایپردی‌ان‌اس (v2.7)
+curl -s "https://$HOST/api/v1/version"  # نسخهٔ در حال اجرا
+curl -s "https://$HOST/api/update/check" -H "Authorization: Bearer <dashboard-session-token>"
+
+# آپلود آیکون برای یک گروه پالیسی سفارشی (SVG ≤ 16 KB یا PNG ≤ 64 KB، v2.7)
+curl -s -X PUT "https://$HOST/api/custom-groups/$GROUP_ID/icon" \
+  -H "Authorization: Bearer <dashboard-session-token>" \
+  --data-binary @my-icon.svg
+```
 
 ---
 

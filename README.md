@@ -1,7 +1,7 @@
 # ⚡ HyperDNS — HyperRAIN Standalone SmartDNS & Gaming Gateway
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Release-v2.6.0-00f0ff?style=for-the-badge&logo=rocket" alt="Version">
+  <img src="https://img.shields.io/badge/Release-v2.7.0-00f0ff?style=for-the-badge&logo=rocket" alt="Version">
   <img src="https://img.shields.io/badge/Status-Production--Ready%20Beta-amber?style=for-the-badge" alt="Status">
   <img src="https://img.shields.io/badge/Language-Go%201.26-00ADD8?style=for-the-badge&logo=go" alt="Go">
   <img src="https://img.shields.io/badge/Architecture-Single%20Binary%20(Zero%20CGO)-a855f7?style=for-the-badge" alt="Single Binary">
@@ -103,7 +103,7 @@ before it installs anything.
 ### Option 1: One-Line Linux Installer (Recommended)
 Run as `root` on Ubuntu 20.04+, Debian 11+, or AlmaLinux/Rocky 8+:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/IzumiRain/HyperDNS/v2.6.0-beta.1/scripts/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/IzumiRain/HyperDNS/v2.7.0-beta.1/scripts/install.sh | sudo bash
 ```
 
 > [!IMPORTANT]
@@ -157,6 +157,7 @@ The container runs with `network_mode: host` on purpose. A NAT hop on every UDP 
 - **AI Assistants & Platforms:** Copilot, Perplexity, Grok, DeepSeek, Mistral, OpenRouter, and more (v2.2.0).
 - **Social & Messaging:** X, Instagram, Facebook, WhatsApp, Telegram, Reddit (v2.2.0).
 - **Developer 403 Bypass:** Docker Hub, Gradle, Android Developers, NPM, PyPI, OpenAI, Anthropic, Claude, Hugging Face, Cursor, Copilot, Kaggle.
+- **Real policy icons (v2.7).** Every policy card shows its actual service logo (from the CC0 [Simple Icons](https://simpleicons.org) set) or a matching glyph for brand-less categories — baked into the binary, theme-following, no external requests. Named custom groups can carry an uploaded icon too: **SVG ≤ 16 KB or PNG ≤ 64 KB**, validated server-side (SVG is re-encoded through an allowlist; scripts, event handlers and external references cannot survive it) and stored in the encrypted database so backups carry them.
 
 ### 🛡️ 2. Transparent SNI Proxy Relay
 - Layer-4 TCP relaying without SSL termination: the TLS session stays end-to-end between the client and the origin, and HyperDNS never holds the keys for it.
@@ -352,6 +353,49 @@ on every start.
   certificate issuance, and the REST API gateway (master key, exposure toggle,
   integration snippets).
 
+### 🎨 Branding the Subscriber Portal (custom CSS)
+
+Under **Settings → Subscription Portal → Portal custom CSS** the portal can be
+themed three ways: **Inline** (paste CSS), **Local file** (an absolute path on
+the server, read-only, ≤ 256 KB), or **URL** (an `http(s)` stylesheet the
+visitor's browser loads directly — v2.7 makes this work under the panel's CSP by
+allowing exactly the configured origin). Inline and local CSS are sanitised:
+`<style>`/`<script>` breakouts, `@import`, external `url()` and `expression()`
+are stripped, so only your geometry and colours survive.
+
+Three samples that cover the common cases:
+
+```css
+/* 1. Inline — brand the whole page with two colours and a font stack */
+body.portal { background: #0b1220; color: #e2e8f0; }
+.card { border-color: #00f0ff55; border-radius: 16px; }
+.title { font-family: "Vazirmatn", sans-serif; letter-spacing: .02em; }
+```
+
+```css
+/* 2. Inline — embed a logo with no external request (data URI) */
+.brand-mark::before {
+  content: "";
+  display: inline-block;
+  width: 96px; height: 32px;
+  background: url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciLz4=') no-repeat center / contain;
+}
+```
+
+```css
+/* 3. URL source — paste this into the CSS URL field instead of the box:
+      https://cdn.yourbrand.com/portal.css                        */
+/* that stylesheet itself might read:                            */
+:root { --accent: #22d3ee; }
+.card { box-shadow: 0 0 0 1px var(--accent); }
+```
+
+**Group icons:** each named custom policy group can carry an icon from the group
+editor — **SVG ≤ 16 KB or PNG ≤ 64 KB (≤ 512×512)**. The upload is re-encoded
+through an allowlist on the server (scripts, handlers and external references
+cannot survive) and is stored in the encrypted database, so your data backup
+carries it automatically. Full walkthrough: [TUTORIAL.md → Brand the subscriber portal](docs/TUTORIAL.md#5c-brand-the-subscriber-portal-with-custom-css).
+
 ---
 
 ## 🔌 Developer REST API
@@ -377,6 +421,24 @@ two versions:
   embedded and served same-origin, so the docs page works on a network that
   cannot reach a public CDN. "100% offline" is literally true for every asset.
 - **Comprehensive API Specification:** See [API.md](docs/API.md).
+
+**Quick samples** (replace `$KEY` with your Master API Key, `$HOST` with `IP:panel-port`):
+
+```bash
+# Create a subscriber (API v2) — the response carries the portal link + secret
+curl -s -X POST "https://$HOST/api/v2/clients" \
+  -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+  -d '{"display_name":"Ali","allowed_ips":["185.10.20.30"],"validity_days":30}'
+
+# Check whether a newer HyperDNS release is published (v2.7)
+curl -s "https://$HOST/api/v1/version"  # the running build
+curl -s "https://$HOST/api/update/check" -H "Authorization: Bearer <dashboard-session-token>"
+
+# Upload an icon for a custom policy group (SVG ≤ 16 KB or PNG ≤ 64 KB, v2.7)
+curl -s -X PUT "https://$HOST/api/custom-groups/$GROUP_ID/icon" \
+  -H "Authorization: Bearer <dashboard-session-token>" \
+  --data-binary @my-icon.svg
+```
 
 ---
 

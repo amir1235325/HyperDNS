@@ -18,6 +18,48 @@ import (
 //go:embed *.json
 var data embed.FS
 
+//go:embed icons/*.svg
+var iconData embed.FS
+
+// Icon returns the theme-adaptive SVG glyph for the policy with the given id
+// (presets/icons/<id>.svg, same geometry the dashboard's hard-coded Feather
+// icons showed). The second return is false for an unknown id — a caller must
+// fall back (the dashboard keeps its Feather glyph), because a preset delivered
+// by the update channel can arrive before the release that embeds its icon.
+func Icon(id string) ([]byte, bool) {
+	if !validIconID(id) {
+		return nil, false
+	}
+	raw, err := iconData.ReadFile("icons/" + id + ".svg")
+	if err != nil {
+		return nil, false
+	}
+	return raw, true
+}
+
+// HasIcon reports whether the policy id has an embedded SVG.
+func HasIcon(id string) bool {
+	_, ok := Icon(id)
+	return ok
+}
+
+// validIconID guards the lookup: only the shapes genpresets writes (lowercase
+// letters, digits, underscore). Embed FS paths are traversal-proof by
+// construction, but this keeps a caller-supplied string from ever naming a file.
+func validIconID(id string) bool {
+	if id == "" || len(id) > 64 {
+		return false
+	}
+	for _, r := range id {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '_':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // Kind describes what the matcher does with a policy's domains.
 const (
 	// KindProxy spoofs matched names to the operator's SNI proxy.

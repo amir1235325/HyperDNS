@@ -78,6 +78,71 @@ func (db *DB) DeleteCustomGroup(id string) error {
 		if b.Get([]byte(id)) == nil {
 			return ErrCustomGroupNotFound
 		}
+		// The uploaded icon is part of the group's identity; a deleted group
+		// must not leave an orphan blob behind in the icons bucket.
+		if ib := tx.Bucket(bucketGroupIcons); ib != nil {
+			_ = ib.Delete([]byte(id))
+		}
+		return b.Delete([]byte(id))
+	})
+}
+
+// GroupIcon is one uploaded icon: the raw bytes plus the content type the
+// validator determined (image/svg+xml or image/png). Like the group record
+// itself it is non-credential data, so it is stored unsealed in its own bucket
+// and rides along with every data.db backup/restore.
+type GroupIcon struct {
+	Kind string `json:"kind"` // "svg" | "png"
+	Data []byte `json:"data"`
+}
+
+// SaveCustomGroupIcon stores (or replaces) the icon for a group id.
+func (db *DB) SaveCustomGroupIcon(id string, icon GroupIcon) error {
+	if id == "" {
+		return errors.New("custom group icon: empty id")
+	}
+	data, err := json.Marshal(icon)
+	if err != nil {
+		return err
+	}
+	return db.bolt.Update(func(tx *bolt.Tx) error {
+		b, err := tx.CreateBucketIfNotExists(bucketGroupIcons)
+		if err != nil {
+			return err
+		}
+		return b.Put([]byte(id), data)
+	})
+}
+
+// GetCustomGroupIcon returns the stored icon for a group id; ok is false when
+// the group has no icon (or an unreadable record, which is treated as none).
+func (db *DB) GetCustomGroupIcon(id string) (GroupIcon, bool) {
+	var icon GroupIcon
+	err := db.bolt.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketGroupIcons)
+		if b == nil {
+			return nil
+		}
+		raw := b.Get([]byte(id))
+		if raw == nil {
+			return nil
+		}
+		return json.Unmarshal(raw, &icon)
+	})
+	if err != nil || len(icon.Data) == 0 {
+		return GroupIcon{}, false
+	}
+	return icon, true
+}
+
+// DeleteCustomGroupIcon removes a group's icon; deleting a non-existent one is
+// a no-op (the dashboard's "remove icon" is idempotent by nature).
+func (db *DB) DeleteCustomGroupIcon(id string) error {
+	return db.bolt.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketGroupIcons)
+		if b == nil {
+			return nil
+		}
 		return b.Delete([]byte(id))
 	})
 }

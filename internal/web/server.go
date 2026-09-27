@@ -10,6 +10,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"net/url"
 	"path"
 	"path/filepath"
 	"slices"
@@ -732,6 +733,11 @@ func (ws *WebServer) buildAdminMux() *http.ServeMux {
 	mux.HandleFunc("/api/tls/issue", ws.requireAuth(ws.handleTLSSettings))
 	mux.HandleFunc("/api/tls/acme/status", ws.requireAuth(ws.handleACMEStatus))
 
+	// Policy preset icons: the theme-adaptive SVG glyphs for the built-in
+	// policies (v2.7), served below the admin prefix like every other dashboard
+	// asset. Registered before the SPA catch-all so the prefix always wins.
+	mux.HandleFunc("/icons/policy/", ws.handlePolicyIcon)
+
 	// 7. Embedded Offline SPA Static Assets & Clean Routes
 	//
 	// staticServer replaces http.FileServer here. FileServer cannot produce a
@@ -841,7 +847,7 @@ func (ws *WebServer) withSecurityHeaders(next http.Handler) http.Handler {
 		if r.TLS != nil {
 			w.Header().Set("Strict-Transport-Security", "max-age=31536000")
 		}
-		w.Header().Set("Content-Security-Policy", contentSecurityPolicy)
+		w.Header().Set("Content-Security-Policy", ws.cspFor(r))
 		// Default every dynamic response to uncacheable and unindexable, and let the
 		// two kinds of response that want otherwise say so themselves.
 		//
@@ -923,6 +929,46 @@ const contentSecurityPolicy = "default-src 'self'; " +
 	"base-uri 'self'; " +
 	"form-action 'self'; " +
 	"frame-ancestors 'none'"
+
+// cspFor returns the response's Content-Security-Policy. It is the static policy
+// above, with one portal-specific widening: when the operator's custom portal
+// theme comes from a URL source, the stylesheet is a cross-origin <link>, which
+// style-src 'self' would silently block — the v2.4 source never loaded a single
+// byte. The configured origin is appended on the portal routes only, so the
+// dashboard and the API keep the strict static policy (v2.7 fix).
+func (ws *WebServer) cspFor(r *http.Request) string {
+	p := r.URL.Path
+	isPortalPage := strings.HasPrefix(p, "/sub/") || strings.HasPrefix(p, "/ip/") ||
+		strings.HasPrefix(p, "/api/sub/") || p == "/sub" || p == "/ip"
+	if !isPortalPage {
+		return contentSecurityPolicy
+	}
+	origin := ws.portalThemeStyleOrigin()
+	if origin == "" {
+		return contentSecurityPolicy
+	}
+	return strings.Replace(contentSecurityPolicy,
+		"style-src 'self' 'unsafe-inline';",
+		"style-src 'self' 'unsafe-inline' "+origin+";", 1)
+}
+
+// portalThemeStyleOrigin returns the scheme://host of the operator's configured
+// theme CSS URL, or "" when the theme is not URL-sourced. Read from a snapshot,
+// so a live settings save cannot race the header build.
+func (ws *WebServer) portalThemeStyleOrigin() string {
+	if ws.subSettings == nil {
+		return ""
+	}
+	snap := ws.subSettings.Snapshot()
+	if snap.ThemeCSSSource != "url" || snap.ThemeCSSURL == "" {
+		return ""
+	}
+	u, err := url.Parse(snap.ThemeCSSURL)
+	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return ""
+	}
+	return u.Scheme + "://" + u.Host
+}
 
 func (ws *WebServer) Start() error {
 	// Panel exposure policy (v2.1.0 remediation, installer contract): the

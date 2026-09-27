@@ -725,6 +725,9 @@ All of these live **inside the admin namespace** (`/<admin-path>/api/...` below 
 | `GET /api/update/check` | *(v2.6)* Reports the running version, the version published on the project's `main` branch, and whether a newer one is available. Read-only. |
 | `POST /api/update/apply` | *(v2.6)* Starts a background, SHA-256-verified binary update and restart (**Linux/systemd only**). The data files are snapshotted first and never rewritten; returns immediately and the daemon restarts onto the new binary. |
 | `GET /api/update/status` | *(v2.6)* Live progress of an in-flight update, for the dashboard's progress modal to poll. |
+| `GET /api/custom-groups` | *(v2.3)* Lists the named custom policy groups (id, name, action, domains, enabled). `POST` on the same path creates one (`name`, `action` = `proxy`/`direct`/`block`, `domains`, `enabled`). |
+| `PUT /api/custom-groups/{id}/icon` | *(v2.7)* Replaces the group's icon. Body is the raw image: **SVG ≤ 16 KB** (re-encoded through an element/attribute allowlist — scripts, event handlers, `foreignObject`, `use`/`image` and external `url()` references cannot survive) or **PNG ≤ 64 KB, ≤ 512×512**. |
+| `GET /api/custom-groups/{id}/icon` | *(v2.7)* Serves the stored icon (`image/svg+xml` or `image/png`); 404 when the group has none. `DELETE` on the same path removes it. |
 
 The password-change endpoint (`POST /api/config/server`) accepts a `code` field and enforces the same second-factor gate. Session invalidation after 2FA, LDAP-mode, admin-path and credential changes is deliberate and documented in the v2.1 plan.
 

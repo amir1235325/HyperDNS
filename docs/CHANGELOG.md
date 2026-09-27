@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
+## 🎨 [v2.7.0-beta.1] — Real Policy Icons, Custom Group Icons, Working Theme URL Source
+
+Codename **HyperFORGE**. An identity release: policy cards carry their real service logos, custom groups get operator-uploaded icons, and the portal theme feature loses the two defects that kept parts of it invisible.
+
+### ✨ Added
+- **Real icons for the built-in policies.** Every policy card now shows an embedded SVG: the actual service logo for the brands it names (Riot, Epic, Steam, PUBG, EA, Battle.net/Blizzard, Ubisoft, Rockstar, PlayStation, Roblox, Discord, Spotify, Twitch, Kick, Google, SoundCloud — sourced from the CC0-licensed [Simple Icons](https://simpleicons.org) collection) and a matching Feather glyph for categories that have no brand (AI, Social, Adblock, FamilySafe, Downloads, and the extra groups). All thirty are baked into the binary, coloured with `currentColor` so they follow the panel's theme, and served at `/icons/policy/<id>.svg` with a Feather fallback if a file is ever missing.
+- **Custom icons for custom policy groups.** Each named group can now carry an uploaded icon, set from the group editor: **SVG ≤ 16 KB or PNG ≤ 64 KB (≤ 512×512)**. Uploads are stored in the encrypted database — so the existing backup/restore flow covers them — and the editor shows a live preview with a remove button.
+- **A private validator for hand-made presets.** `go run ./tools/presetchannel -in presets validate` now also checks the toggle-key convention and cross-file key duplicates, the action kind, the icon-field convention and the icon file's presence, the RFC 3339 `updated_at` format, `sort_order` collisions, and unreferenced icon files. Repo-only — nothing here ships in any bundle — and the same check gates preset PRs in CI.
+
+### 🖼 Fixed
+- **The URL source of the custom portal CSS never loaded.** The static Content-Security-Policy (`style-src 'self' 'unsafe-inline'`) blocked the cross-origin `<link>` the URL source emits, so no external stylesheet ever applied. The portal's CSP now widens `style-src` with exactly the configured origin — the dashboard and API keep the strict static policy.
+- **The 16 KiB inline-CSS render bound is now actually enforced.** It was declared but never consulted; a database written before the save-time cap existed could serve an unbounded stylesheet to every portal page. Oversized inline CSS is skipped with a log line.
+
+### 🧪 Quality gates this release passed
+- `go build ./...` (host + linux cross), `go vet ./...`, all packages green with `-count=1`; `web/js/app.js` passes `node --check`.
+- New tests: the SVG allowlist re-encoder (dirty payloads in, clean geometry out), the PNG validator and format sniffing, every preset having a theme-following embedded icon, the icon route's content type / 404 / method-guard surface, and the portal-only CSP widening.
+
+### ⚠️ Upgrade notes
+- No data migration; the new `custom_group_icons` bucket is created on first icon upload and rides along with existing backups. Group icons are panel-admin content only and never appear on the public portal.
+
+---
+
 ## 🚀 [v2.6.0-beta.1] — In-Panel Updates, Self-Resolving Service Names, NAT-Aware Installer & a Security Pass
 
 Codename **HyperFORGE**. A reachability-and-maintenance release: the dashboard can update itself, the resolver always answers its own service names, the installer stops guessing the wrong public IP, and a round of audited security fixes lands — including a release-blocking dashboard defect that shipped in v2.5.

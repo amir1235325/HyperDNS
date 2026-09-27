@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"strings"
 
 	"hyperdns/internal/httpx"
 	"hyperdns/internal/service"
@@ -58,16 +57,21 @@ func (ws *WebServer) handleCustomGroups(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
-// handleCustomGroupByID is the item endpoint: PUT updates, DELETE removes.
+// handleCustomGroupByID is the item endpoint: PUT updates, DELETE removes, and
+// the /icon sub-resource (v2.7) serves/replaces/removes the group's uploaded
+// icon — all inside the same authenticated route.
 func (ws *WebServer) handleCustomGroupByID(w http.ResponseWriter, r *http.Request) {
 	if ws.customGroups == nil {
 		httpx.WriteJSONError(w, http.StatusServiceUnavailable, "custom policy groups are unavailable")
 		return
 	}
-	id := strings.TrimPrefix(r.URL.Path, "/api/custom-groups/")
-	id = strings.Trim(strings.TrimSpace(id), "/")
-	if id == "" {
+	id, sub, ok := parseCustomGroupPath(r.URL.Path)
+	if !ok {
 		httpx.WriteJSONError(w, http.StatusBadRequest, "missing group id")
+		return
+	}
+	if sub == "icon" {
+		ws.handleCustomGroupIcon(w, r, id)
 		return
 	}
 	switch r.Method {

@@ -35,13 +35,13 @@ type QuotaEnforcer interface {
 }
 
 type Handler struct {
-	access       AccessProvider
-	cache        *cache.Cache
-	matcher      *matcher.Matcher
-	upstreams    *upstream.UpstreamPool
-	telemetry    TelemetrySink
-	publicIP     string
-	publicIPv6   string
+	access     AccessProvider
+	cache      *cache.Cache
+	matcher    *matcher.Matcher
+	upstreams  *upstream.UpstreamPool
+	telemetry  TelemetrySink
+	publicIP   string
+	publicIPv6 string
 	// selfNames holds this server's own service hostnames — the panel domain,
 	// the subscriber-portal domain, and the DoH/DoT host. Queries for these are
 	// answered with the server's public address ahead of the access whitelist

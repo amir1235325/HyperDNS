@@ -181,6 +181,9 @@ func verify(dir string) {
 // not a failure.
 func validate(dir string) {
 	claims := map[string]string{} // domain -> first policy id that claims it
+	keys := map[string]string{}   // toggle key -> first policy id that uses it
+	orders := map[int]string{}    // sort_order -> first policy id that holds it
+	referencedIcons := map[string]bool{}
 	problems := 0
 	files, err := os.ReadDir(dir)
 	if err != nil {
@@ -196,11 +199,16 @@ func validate(dir string) {
 			panic(err)
 		}
 		var p struct {
-			ID      string   `json:"id"`
-			Name    string   `json:"name"`
-			Kind    string   `json:"kind"`
-			Version int      `json:"version"`
-			Domains []string `json:"domains"`
+			ID        string   `json:"id"`
+			Name      string   `json:"name"`
+			Key       string   `json:"key"`
+			Category  string   `json:"category"`
+			Kind      string   `json:"kind"`
+			Icon      string   `json:"icon"`
+			SortOrder int      `json:"sort_order"`
+			Version   int      `json:"version"`
+			UpdatedAt string   `json:"updated_at"`
+			Domains   []string `json:"domains"`
 		}
 		if err := json.Unmarshal(raw, &p); err != nil {
 			fmt.Printf("PARSE ERROR %s: %v\n", f.Name(), err)
@@ -214,6 +222,51 @@ func validate(dir string) {
 		}
 		if p.Name == "" || p.Version < 1 {
 			fmt.Printf("INCOMPLETE %s: name=%q version=%d\n", f.Name(), p.Name, p.Version)
+			problems++
+		}
+		if !keyRe.MatchString(p.Key) {
+			fmt.Printf("BAD KEY %s: %q (want enable_<name>)\n", f.Name(), p.Key)
+			problems++
+		} else if owner, ok := keys[p.Key]; ok && owner != p.ID {
+			fmt.Printf("DUPLICATE KEY %s and %s both use %s\n", owner, p.ID, p.Key)
+			problems++
+		} else {
+			keys[p.Key] = p.ID
+		}
+		if p.Category == "" {
+			fmt.Printf("NO CATEGORY %s\n", f.Name())
+			problems++
+		}
+		if p.Kind != "proxy" && p.Kind != "block" && p.Kind != "veto" {
+			fmt.Printf("BAD KIND %s: %q (proxy|block|veto)\n", f.Name(), p.Kind)
+			problems++
+		}
+		if p.SortOrder < 0 {
+			fmt.Printf("BAD SORT_ORDER %s: %d\n", f.Name(), p.SortOrder)
+			problems++
+		} else if owner, ok := orders[p.SortOrder]; ok && owner != p.ID {
+			fmt.Printf("NOTE %s and %s share sort_order %d (display order becomes ambiguous)\n", owner, p.ID, p.SortOrder)
+		} else {
+			orders[p.SortOrder] = p.ID
+		}
+		if p.UpdatedAt == "" {
+			fmt.Printf("NO UPDATED_AT %s\n", f.Name())
+			problems++
+		} else if _, err := time.Parse(time.RFC3339, p.UpdatedAt); err != nil {
+			fmt.Printf("BAD UPDATED_AT %s: %q is not RFC 3339 (e.g. 2026-09-26T12:00:00Z)\n", f.Name(), p.UpdatedAt)
+			problems++
+		}
+		// The icon must follow the generator's convention AND exist beside the
+		// policy files — a preset whose icon ships later renders with the
+		// Feather fallback, which is fine, but a hand-made preset pushed without
+		// its file is always an oversight, never a choice.
+		if p.Icon != "icons/"+p.ID+".svg" {
+			fmt.Printf("BAD ICON FIELD %s: %q (want icons/%s.svg)\n", f.Name(), p.Icon, p.ID)
+			problems++
+		} else if iconPath := filepath.Join(dir, "icons", p.ID+".svg"); iconExists(iconPath) {
+			referencedIcons[p.ID+".svg"] = true
+		} else {
+			fmt.Printf("MISSING ICON %s: icons/%s.svg not found in %s\n", f.Name(), p.ID, dir)
 			problems++
 		}
 		if len(p.Domains) == 0 {
@@ -238,12 +291,28 @@ func validate(dir string) {
 			}
 		}
 	}
+	// Icons nobody references: harmless, but usually a rename that forgot a file.
+	if iconDir, err := os.ReadDir(filepath.Join(dir, "icons")); err == nil {
+		for _, f := range iconDir {
+			if f.IsDir() || !referencedIcons[f.Name()] {
+				fmt.Printf("NOTE unreferenced icon file: icons/%s\n", f.Name())
+			}
+		}
+	}
 	if problems != 0 {
 		fmt.Printf("validate FAILED: %d problem(s) across %d files\n", problems, count)
 		os.Exit(1)
 	}
-	fmt.Printf("validate OK: %d policies, %d domain claims\n", count, len(claims))
+	fmt.Printf("validate OK: %d policies, %d domain claims, %d icons\n", count, len(claims), len(referencedIcons))
 }
+
+func iconExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
+// keyRe pins the toggle-key convention the dashboard and config keys share.
+var keyRe = regexp.MustCompile(`^enable_[a-z0-9_]+$`)
 
 // domainRe matches a hostname entry: lowercase labels, an optional leading *.,
 // at least one dot. It is deliberately strict — the harvest automation writes

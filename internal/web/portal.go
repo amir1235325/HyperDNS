@@ -561,9 +561,15 @@ func resolvePortalThemeCSS(snap database.SubscriptionSnapshot) template.HTML {
 			return ""
 		}
 		return wrapThemeCSS(SanitizeThemeCSS(string(data)))
-	default: // "", "inline"
-		return wrapThemeCSS(SanitizeThemeCSS(snap.ThemeCSS))
 	}
+	// Inline (and any unknown source, which normalises to inline): sanitise and
+	// bound it. The save path caps at 64 KiB, but a database written before that
+	// handler existed or edited out-of-band could carry more — skip, don't serve.
+	if len(snap.ThemeCSS) > maxThemeCSSBytes {
+		log.Printf("[Portal] inline custom CSS is %d bytes, over the %d limit — ignored", len(snap.ThemeCSS), maxThemeCSSBytes)
+		return ""
+	}
+	return wrapThemeCSS(SanitizeThemeCSS(snap.ThemeCSS))
 }
 
 // renderIPResultPage writes either the subscriber portal or the error page.

@@ -19,6 +19,9 @@ var (
 	bucketSettings     = []byte("settings")
 	bucketUpstreams    = []byte("upstreams")
 	bucketCustomGroups = []byte("custom_groups")
+	// bucketGroupIcons holds the dashboard-uploaded icons for custom policy
+	// groups (v2.7): raw image bytes keyed by group id, created on first upload.
+	bucketGroupIcons = []byte("custom_group_icons")
 )
 
 // bucketsInUse is everything a v1.5.0 database actually holds.
@@ -31,7 +34,7 @@ var (
 // daemon does not make; they are dropped rather than carried forward and audited
 // again at every release.
 var (
-	bucketsInUse   = [][]byte{bucketClients, bucketPolicies, bucketSettings, bucketCustomGroups}
+	bucketsInUse   = [][]byte{bucketClients, bucketPolicies, bucketSettings, bucketCustomGroups, bucketGroupIcons}
 	bucketsRetired = [][]byte{bucketLogs, bucketUpstreams}
 )
 

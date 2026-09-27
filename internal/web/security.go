@@ -303,12 +303,12 @@ func SafeRedirectHost(h string) string {
 	return NormalizeDomain(h)
 }
 
-// maxThemeCSSBytes bounds the subscriber theme. It is not a style sheet — the
-// realistic ceiling for the overrides an operator writes by hand is a few
-// kilobytes, and a value past that is either a paste accident or an attempt to
-// smuggle payload onto a page that is served to strangers with no other
-// filtering. 16 KiB is the bound, chosen with an order of magnitude of margin
-// over anything legitimate.
+// maxThemeCSSBytes bounds the subscriber theme at render time. The authoritative
+// save-time cap lives in the subscription-settings handler (64 KiB); this render
+// bound is the second fence — an upgraded database written before that handler
+// existed, or a hand-edited one, cannot push an unbounded blob into every portal
+// page. A value past 16 KiB is either a paste accident or an attempt to smuggle
+// payload, so it is skipped rather than partially served.
 const maxThemeCSSBytes = 16 * 1024
 
 // SanitizeThemeCSS removes the constructs that turn a CSS textbox into a vector

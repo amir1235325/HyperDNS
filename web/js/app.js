@@ -783,6 +783,10 @@ function renderConfig(cfg) {
     checkForUpdate();
   }
 
+  // v2.7: swap the policy cards' Feather placeholders for their embedded SVG
+  // icons. Idempotent: only spans without the iconDone marker are touched.
+  upgradePolicyIcons();
+
   // Header & guide public IP
   const pubIP = cfg.server.public_ip || '127.0.0.1';
   const headerIPEl = document.getElementById('header-public-ip');
@@ -980,10 +984,19 @@ function renderCustomGroups() {
     row.className = 'flex items-center justify-between py-2 px-3 rounded-lg bg-slate-950/60 border border-slate-800 text-xs';
     const state = g.enabled ? '' : ' <span class="text-slate-500">(disabled)</span>';
     const actionCls = actionColor[g.action] || 'text-slate-400';
+    // The uploaded icon rides in the left block and removes itself when the
+    // group has none — one request per row, self-deleting on 404.
+    const iconHTML = `
+      <span data-icon-slot class="w-6 h-6 rounded bg-slate-900 border border-slate-800 flex items-center justify-center shrink-0">
+        <i data-feather="folder" class="w-3 h-3 text-slate-600"></i>
+      </span>`;
     row.innerHTML = `
-      <div class="min-w-0">
-        <div class="font-bold text-white truncate">${escapeHTML(g.name)}${state}</div>
-        <div class="font-mono ${actionCls}">${escapeHTML(g.action)} · ${g.domains.length} domain(s)</div>
+      <div class="flex items-center gap-2 min-w-0 flex-1">
+        ${iconHTML}
+        <div class="min-w-0">
+          <div class="font-bold text-white truncate">${escapeHTML(g.name)}${state}</div>
+          <div class="font-mono ${actionCls}">${escapeHTML(g.action)} · ${g.domains.length} domain(s)</div>
+        </div>
       </div>
       <div class="flex items-center gap-1.5 shrink-0">
         <button class="edit-group-btn px-2.5 py-1 rounded bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-700 transition" data-id="${escapeHTML(g.id)}">Edit</button>
@@ -992,6 +1005,14 @@ function renderCustomGroups() {
         </button>
       </div>
     `;
+    const slot = row.querySelector('[data-icon-slot]');
+    const img = new Image();
+    img.className = 'w-4 h-4';
+    img.alt = '';
+    img.decoding = 'async';
+    img.onload = () => { slot.innerHTML = ''; slot.appendChild(img); };
+    img.onerror = () => {}; // keep the Feather folder placeholder
+    img.src = api(`/api/custom-groups/${encodeURIComponent(g.id)}/icon`) + '?t=' + Date.now();
     container.appendChild(row);
   });
   safeFeatherReplace();
@@ -1006,7 +1027,74 @@ function openCustomGroupEditor(group) {
   document.getElementById('custom-group-domains').value = group ? group.domains.join('\n') : '';
   document.getElementById('custom-group-enabled').checked = group ? group.enabled : true;
   document.getElementById('custom-group-status').textContent = '';
+  resetGroupIconEditor(group ? group.id : null);
   ed.classList.remove('hidden');
+}
+
+// ---- Group icon upload (v2.7) ----------------------------------------------
+// One pending file per editor session; it is sent to the server right away for
+// an existing group, or held until Save creates the group for a new one.
+let pendingGroupIconFile = null;
+
+function resetGroupIconEditor(groupId) {
+  pendingGroupIconFile = null;
+  const file = document.getElementById('custom-group-icon-file');
+  if (file) file.value = '';
+  refreshGroupIconPreview(groupId);
+}
+
+function refreshGroupIconPreview(groupId) {
+  const preview = document.getElementById('custom-group-icon-preview');
+  const removeBtn = document.getElementById('custom-group-icon-remove');
+  if (!preview) return;
+  preview.innerHTML = '';
+  if (pendingGroupIconFile) {
+    // Client-side preview of the chosen file; the server re-validates on save.
+    const url = URL.createObjectURL(pendingGroupIconFile);
+    const img = new Image();
+    img.className = 'w-6 h-6';
+    img.alt = '';
+    img.onload = () => URL.revokeObjectURL(url);
+    img.src = url;
+    preview.appendChild(img);
+    if (removeBtn) removeBtn.classList.remove('hidden');
+    return;
+  }
+  if (groupId) {
+    const img = new Image();
+    img.className = 'w-6 h-6';
+    img.alt = '';
+    img.onload = () => {
+      preview.appendChild(img);
+      if (removeBtn) removeBtn.classList.remove('hidden');
+    };
+    img.onerror = () => showGroupIconPlaceholder();
+    img.src = api(`/api/custom-groups/${encodeURIComponent(groupId)}/icon`) + '?t=' + Date.now();
+    return;
+  }
+  showGroupIconPlaceholder();
+  if (removeBtn) removeBtn.classList.add('hidden');
+}
+
+function showGroupIconPlaceholder() {
+  const preview = document.getElementById('custom-group-icon-preview');
+  if (!preview) return;
+  preview.innerHTML = '<i data-feather="image" class="w-4 h-4 text-slate-600"></i>';
+  safeFeatherReplace();
+}
+
+async function uploadPendingGroupIcon(groupId) {
+  if (!pendingGroupIconFile) return true;
+  const res = await fetch(api(`/api/custom-groups/${encodeURIComponent(groupId)}/icon`), {
+    method: 'PUT',
+    headers: { 'Authorization': 'Bearer ' + authToken },
+    body: pendingGroupIconFile
+  });
+  if (!res.ok) {
+    showToast(await errorMessage(res, 'Icon was rejected'), 'error');
+    return false;
+  }
+  return true;
 }
 
 async function saveCustomGroup() {
@@ -1032,6 +1120,20 @@ async function saveCustomGroup() {
     if (!res.ok) {
       status.textContent = data.error || 'Save failed';
       return;
+    }
+    // The group exists now — flush a pending icon, but don't lose the save if
+    // the icon is refused: the group is stored, the modal just stays open with
+    // the reason.
+    const savedId = data.id || id;
+    if (pendingGroupIconFile && savedId) {
+      if (!(await uploadPendingGroupIcon(savedId))) {
+        status.textContent = 'Group saved, but the icon was rejected';
+        pendingGroupIconFile = null;
+        refreshGroupIconPreview(savedId);
+        document.getElementById('custom-group-id').value = savedId;
+        loadCustomGroups();
+        return;
+      }
     }
     document.getElementById('custom-group-editor').classList.add('hidden');
     showToast('Custom group saved', 'success');
@@ -2872,6 +2974,35 @@ function initEventListeners() {
     document.getElementById('custom-group-editor')?.classList.add('hidden');
   });
   document.getElementById('save-custom-group-btn')?.addEventListener('click', saveCustomGroup);
+  // Group icon (v2.7): choose a file → hold it as pending; Save flushes it to
+  // the server (for a new group this is the only moment the id exists).
+  // Remove clears it server-side for an existing group.
+  document.getElementById('custom-group-icon-file')?.addEventListener('change', (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    if (!/\.(svg|png)$/i.test(file.name) && !/^image\/(svg\+xml|png)$/.test(file.type)) {
+      showToast('Pick an SVG or PNG file', 'error');
+      e.target.value = '';
+      return;
+    }
+    pendingGroupIconFile = file;
+    const id = document.getElementById('custom-group-id')?.value.trim();
+    refreshGroupIconPreview(id || null);
+    e.target.value = '';
+  });
+  document.getElementById('custom-group-icon-remove')?.addEventListener('click', async () => {
+    const id = document.getElementById('custom-group-id')?.value.trim();
+    pendingGroupIconFile = null;
+    if (id) {
+      try {
+        await fetch(api(`/api/custom-groups/${encodeURIComponent(id)}/icon`), {
+          method: 'DELETE',
+          headers: { 'Authorization': 'Bearer ' + authToken }
+        });
+      } catch (err) { /* the preview reset below still reflects local state */ }
+    }
+    refreshGroupIconPreview(id || null);
+  });
   document.getElementById('custom-groups-list')?.addEventListener('click', (e) => {
     const editBtn = e.target.closest('.edit-group-btn');
     if (editBtn) {
@@ -5180,6 +5311,35 @@ function showToast(msg, type = 'info') {
 // SELF-UPDATE (v2.6): check the main-branch version, then apply a
 // SHA256-verified binary swap + restart. Data is preserved and backed up.
 // =======================================================
+// =======================================================
+// POLICY ICONS (v2.7): each built-in policy card carries a data-preset id; the
+// embedded SVG glyph for it (a real brand mark, or the Feather glyph for
+// categories) is served at /icons/policy/<id>.svg. The Feather <i> stays in
+// place until the SVG actually loads, so a preset whose icon has not shipped
+// yet (a channel delivery ahead of the release) keeps its old glyph instead of
+// showing a broken image.
+// =======================================================
+function upgradePolicyIcons() {
+  document.querySelectorAll('.policy-icon[data-preset]').forEach((span) => {
+    if (span.dataset.iconDone) return;
+    const id = span.dataset.preset;
+    if (!/^[a-z0-9_]{1,64}$/.test(id)) return;
+    const img = new Image();
+    img.className = 'w-4 h-4';
+    img.alt = '';
+    img.decoding = 'async';
+    img.onload = () => {
+      // The card may have re-rendered between load and swap; only swap if our
+      // Feather glyph is still the child of this span.
+      const glyph = span.querySelector('i');
+      if (glyph) glyph.replaceWith(img);
+      span.dataset.iconDone = '1';
+    };
+    img.onerror = () => { span.dataset.iconDone = '1'; };
+    img.src = '/icons/policy/' + id + '.svg';
+  });
+}
+
 async function checkForUpdate() {
   try {
     const res = await fetch(api('/api/update/check'), { headers: { 'Authorization': 'Bearer ' + authToken } });
@@ -5207,8 +5367,7 @@ function showUpdateAvailable(st) {
   safeFeatherReplace();
 }
 let hdnsUpdateModal = null;
-function openUpdateModal(st) {
-  if (hdnsUpdateModal) hdnsUpdateModal.remove();
+function openUpdateModal(st) {  if (hdnsUpdateModal) hdnsUpdateModal.remove();
   const backdrop = document.createElement('div');
   backdrop.className = 'fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-md px-4';
   backdrop.innerHTML = `
