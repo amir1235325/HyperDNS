@@ -51,3 +51,7 @@
 # Preset data is hashed (sha256) for channel verification; the bytes embedded in
 # the binary must equal the bytes the Pages channel publishes, so pin LF.
 presets/*.json text eol=lf
+# The policy icons are go:embed'd and their tests assert the exact document
+# shape (a trailing newline); pin LF so a Windows checkout cannot turn them
+# into CRLF documents.
+presets/icons/*.svg text eol=lf
