@@ -115,6 +115,28 @@ jobs:
           sha256sum * > checksums.txt
           cat checksums.txt
 
+      # Sign checksums.txt with the release key (audit fix: the self-update
+      # channel must authenticate the expected hash, not merely compare it
+      # against itself). The private half comes from the RELEASE_SIGNING_KEY
+      # Actions secret as base64 of the raw 32-byte ed25519 key; the public half
+      # is pinned in internal/selfupdate (ReleasePubKey), which refuses any
+      # bundle whose checksums signature does not verify. The signature is a
+      # detached header the daemon reads from the asset response, so it covers
+      # exactly the published bytes with no re-serialisation on either side.
+      - name: Sign the checksums manifest
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: |
+          if [ -z "${RELEASE_SIGNING_KEY}" ]; then
+            echo "::error::RELEASE_SIGNING_KEY is not set — refusing to publish an unsigned release bundle"
+            exit 1
+          fi
+          go run ./tools/releasesign sign --in dist/checksums.txt --header dist/checksums.sig
+
+      # The signature must be transported as an HTTP response header for the
+      # asset download, so create the release describing it and let the upload
+      # step attach the .sig file to the same release; the daemon-side verifier
+      # reads X-HyperDNS-Checksums-Signature (tools/releasesign knows that name).
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')

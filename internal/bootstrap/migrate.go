@@ -38,10 +38,16 @@ func MigrateDefaultAllowAll(store SettingsWriter) {
 	}
 	migrations, err := loadMigrationMarkers(store)
 	if err != nil {
-		// Unreadable marker state is reported, not fatal: the daemon still
-		// starts (with the compiled default) and the operator can see why the
-		// migration did not claim to have run.
-		log.Printf("[Bootstrap] could not read migration markers, skipping allow_all migration: %v", err)
+		// Unreadable marker state is reported and then handled FAIL-CLOSED:
+		// rather than skipping the migration (which left a legacy install
+		// running public), converge allow_all to the safe default and leave the
+		// marker unwritten, so the next boot retries. The daemon still starts —
+		// refusing to boot over a non-secret bookkeeping key would take the
+		// whole resolver down for a bookmark — but it starts CLOSED.
+		log.Printf("[Bootstrap] could not read migration markers (%v); converging allow_all to the safe default and retrying next boot", err)
+		if err2 := store.SetSetting("allow_all", false); err2 != nil {
+			log.Printf("[Bootstrap] could not persist the v2.2.0 whitelist default: %v", err2)
+		}
 		return
 	}
 	if migrations["whitelist_v2_2"] {
@@ -64,6 +70,14 @@ func MigrateDefaultAllowAll(store SettingsWriter) {
 
 // loadMigrationMarkers reads the marker set, treating an absent record as an
 // empty set (a pre-v2.2.0 database) rather than an error.
+//
+// "Present but undecodable" is distinguished from "absent" and is a HARD error
+// (audit finding #7, v2.8): a marker that is valid JSON of the wrong type — a
+// number, a string, an array, or an object with non-boolean members — used to
+// decode-fail here, and the caller then skipped the allow_all=false convergence
+// and booted a legacy install as an OPEN resolver. The store's schema gate now
+// also validates this key (see setting_repo.go's migration entry), which makes
+// the wrong-typed marker unreachable at boot; this branch is the second fence.
 func loadMigrationMarkers(store SettingsStore) (map[string]bool, error) {
 	present, err := store.SettingExists(migrationMarkerKey)
 	if err != nil {
@@ -74,10 +88,12 @@ func loadMigrationMarkers(store SettingsStore) (map[string]bool, error) {
 	}
 	var markers map[string]bool
 	if err := store.GetSetting(migrationMarkerKey, &markers); err != nil {
-		return nil, fmt.Errorf("read migration markers: %w", err)
+		return nil, fmt.Errorf("the stored migration marker is unreadable (corrupt or wrong type): %w", err)
 	}
 	if markers == nil {
-		return map[string]bool{}, nil
+		// A JSON null where a marker object belongs is the same class of
+		// corruption; treat it as unreadable rather than "never migrated".
+		return nil, fmt.Errorf("the stored migration marker is empty (expected a marker object)")
 	}
 	return markers, nil
 }

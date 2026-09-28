@@ -451,6 +451,54 @@ func (db *DB) ListClients() ([]Client, error) {
 	return list, err
 }
 
+// UpdateClient runs fn against the stored record inside ONE write transaction
+// and commits whatever fn leaves behind, so a read-modify-write is atomic.
+//
+// This is the pattern registerIP already uses for the subscriber path. Every
+// other write path (operator edits, IP assignment/renewal, secret rotation,
+// the expiry sweep, the traffic cycle resets) used to read the whole record in
+// its own View transaction, mutate it in memory, and save it in a second
+// transaction — so a bind that committed in between was silently overwritten,
+// dropping a subscriber's live address and re-enabling an account the operator
+// had suspended. bbolt's single-writer model makes the whole
+// read→decide→commit sequence atomic once the read also happens inside the
+// Update, so no CAS field and no retry loop are needed.
+//
+// fn receives the freshly decoded record; mutating it in place is the normal
+// use. Returning an error aborts the transaction and leaves the stored record
+// untouched.
+func (db *DB) UpdateClient(id string, fn func(c *Client) error) (Client, error) {
+	var out Client
+	err := db.bolt.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketClients)
+		if b == nil {
+			return ErrClientNotFound
+		}
+		raw := b.Get([]byte(id))
+		if raw == nil {
+			return ErrClientNotFound
+		}
+		fresh, err := db.unpackClient(raw)
+		if err != nil {
+			return err
+		}
+		if fn != nil {
+			if err := fn(fresh); err != nil {
+				return err
+			}
+		}
+		if err := putClientTx(db, b, fresh); err != nil {
+			return err
+		}
+		out = *fresh
+		return nil
+	})
+	if err != nil {
+		return Client{}, err
+	}
+	return out, nil
+}
+
 // FindClientByToken finds a client by subscription token.
 //
 // The scan never decrypts: it compares the stored lookup fingerprint against the

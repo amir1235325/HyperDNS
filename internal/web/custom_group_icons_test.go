@@ -118,3 +118,62 @@ func TestValidateGroupPNG(t *testing.T) {
 		t.Fatalf("2x2 PNG must pass: %v", err)
 	}
 }
+
+// Audit finding #5: the guard must reject every external url() however it is
+// spelled. The shipped version was a case-sensitive prefix test on the whole
+// value, so URL(…), a second url() after an internal one, and quoted external
+// references were all stored verbatim.
+func TestSanitizeGroupSVGRejectsEveryExternalURLCase(t *testing.T) {
+	for _, v := range []string{
+		`URL(https://evil.example/g)`,
+		`Url(https://evil.example/g)`,
+		`url(https://evil.example/g)`,
+		` url(https://evil.example/g)`,
+		`url( "https://evil.example/g" )`,
+		`url("https://evil.example/g")`,
+		`url(#a) url(https://evil.example/g)`,
+		`url(#a) URL(https://evil.example/g)`,
+		`url('https://evil.example/g')`,
+		`url(//evil.example/g)`,
+	} {
+		svg := `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><circle r="5" fill="` + v + `"/></svg>`
+		if _, err := sanitizeGroupSVG([]byte(svg)); err == nil {
+			t.Errorf("fill=%q must be rejected", v)
+		}
+	}
+	// Internal references, quoted or not, survive. (A double-quoted value inside
+	// a double-quoted attribute is a malformed document, so that spelling is
+	// built with a single-quoted attribute — the encoder re-escapes it, and the
+	// point of these cases is that the reference itself is preserved.)
+	for _, v := range []string{`url(#a)`, ` url(#a) `, `#0ff`} {
+		svg := `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><circle r="5" fill="` + v + `"/></svg>`
+		out, err := sanitizeGroupSVG([]byte(svg))
+		if err != nil {
+			t.Errorf("fill=%q must survive: %v", v, err)
+			continue
+		}
+		if !strings.Contains(string(out), v) {
+			t.Errorf("fill=%q lost from output: %s", v, out)
+		}
+	}
+	for _, tc := range []struct{ attr, fill string }{
+		{`fill='url("#a")'`, `url(&#34;#a&#34;)`},
+		{`fill='url(&#x27;#a&#x27;)'`, `url(&#39;#a&#39;)`},
+	} {
+		svg := `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><circle r="5" ` + tc.attr + `/></svg>`
+		out, err := sanitizeGroupSVG([]byte(svg))
+		if err != nil {
+			t.Errorf("%s must survive: %v", tc.attr, err)
+			continue
+		}
+		if !strings.Contains(string(out), tc.fill) {
+			t.Errorf("%s: expected %q in output, got %s", tc.attr, tc.fill, out)
+		}
+	}
+	// An entity-encoded URL( — the decoder resolves &#76; to L before the guard
+	// sees the value — must also be refused.
+	svg := `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><circle r="5" fill="UR&#76;(https://evil.example/g)"/></svg>`
+	if _, err := sanitizeGroupSVG([]byte(svg)); err == nil {
+		t.Error("entity-encoded external url() must be rejected")
+	}
+}

@@ -310,11 +310,23 @@ func (s *ClientService) IsAllowAll() bool {
 	return s.allowAll
 }
 
-func (s *ClientService) SetAllowAll(allow bool) {
+// SetAllowAll switches the access mode. Persistence is authoritative and
+// happens FIRST, and the in-memory flag is only updated once it has succeeded
+// (audit fix, v2.8): the previous order set the live gate from the request and
+// then discarded the SetSetting error, so a write that failed (disk full, I/O
+// error, read-only mount) left the daemon running public while the store still
+// said closed — and the next restart silently reopened the resolver.
+//
+// Returning the error means the handler answers 500 and the operator sees the
+// failure instead of a green check on a change that did not stick.
+func (s *ClientService) SetAllowAll(allow bool) error {
+	if err := s.db.SetSetting("allow_all", allow); err != nil {
+		return fmt.Errorf("could not persist the access mode: %w", err)
+	}
 	s.mu.Lock()
 	s.allowAll = allow
 	s.mu.Unlock()
-	_ = s.db.SetSetting("allow_all", allow)
+	return nil
 }
 
 // CreateClientRequest is everything an operator can settle at the moment a
@@ -454,95 +466,102 @@ func (s *ClientService) CreateClient(name string, days int, ip string) (*databas
 }
 
 func (s *ClientService) UpdateClient(id string, req UpdateClientRequest) (*database.Client, error) {
-	client, err := s.db.GetClient(id)
+	// The whole read-modify-write runs inside ONE bbolt write transaction
+	// (audit fix, v2.8): before, the record was read in its own View
+	// transaction and saved in a second one, so a subscriber bind that
+	// committed between the two was silently overwritten — the subscriber's
+	// live address vanished and the freed address became claimable by another
+	// account.
+	var out *database.Client
+	_, err := s.db.UpdateClient(id, func(client *database.Client) error {
+		out = client
+		if req.Name != nil && *req.Name != "" {
+			client.Name = *req.Name
+		}
+		if req.UUID != nil && *req.UUID != "" {
+			client.UUID = *req.UUID
+		}
+		if req.AllowedIP != nil {
+			normalized, err := normalizeAllowedIP(*req.AllowedIP)
+			if err != nil {
+				return err
+			}
+			if normalized == "" {
+				client.AllowedIPs = []string{}
+			} else {
+				client.AllowedIPs = []string{normalized}
+			}
+		}
+		if req.TrafficLimitGB != nil {
+			if *req.TrafficLimitGB < 0 {
+				return fmt.Errorf("traffic limit cannot be negative (0 means unlimited)")
+			}
+			client.TrafficLimitGB = *req.TrafficLimitGB
+		}
+		if req.TrafficResetCycle != nil {
+			cycle, ok := NormalizeTrafficCycle(*req.TrafficResetCycle)
+			if !ok {
+				return fmt.Errorf("%w: %q (use daily, weekly, monthly, or an empty value for none)",
+					ErrInvalidTrafficCycle, *req.TrafficResetCycle)
+			}
+			// Anchored only when the cycle actually changes. Re-sending the same cycle as
+			// part of an unrelated edit must not restart the period, or a subscriber whose
+			// note happens to be edited every month would never reach a rollover at all.
+			if cycle != TrafficCycleNone && client.TrafficResetCycle != cycle {
+				client.TrafficResetAnchor = time.Now()
+				client.TrafficResetCount = 0
+			}
+			client.TrafficResetCycle = cycle
+		}
+		if req.ExpiresAt != nil {
+			client.ExpiresAt = *req.ExpiresAt
+		}
+		if req.DaysToAdd != nil && *req.DaysToAdd != 0 {
+			base := client.ExpiresAt
+			if base.IsZero() || time.Now().After(base) {
+				base = time.Now()
+			}
+			client.ExpiresAt = base.Add(time.Duration(*req.DaysToAdd) * 24 * time.Hour)
+		}
+		if req.Enabled != nil {
+			client.Enabled = *req.Enabled
+		}
+		if req.Note != nil {
+			client.Note = *req.Note
+		}
+		if req.CustomPolicies != nil {
+			client.CustomPolicies = *req.CustomPolicies
+		}
+		if req.MaxDevices != nil {
+			// Clamp on write so a stored record is always in range; the registration
+			// path clamps again on read, so an out-of-range legacy value is harmless.
+			client.MaxDevices = database.NormalizeMaxDevices(*req.MaxDevices)
+			// Shrinking the limit trims the oldest bindings immediately, so the panel
+			// figure and the resolver agree without waiting for the next registration.
+			if len(client.AllowedIPs) > client.MaxDevices {
+				client.AllowedIPs = client.AllowedIPs[len(client.AllowedIPs)-client.MaxDevices:]
+			}
+		}
+
+		return nil
+	})
 	if err != nil {
-		return nil, err
-	}
-
-	if req.Name != nil && *req.Name != "" {
-		client.Name = *req.Name
-	}
-	if req.UUID != nil && *req.UUID != "" {
-		client.UUID = *req.UUID
-	}
-	if req.AllowedIP != nil {
-		normalized, err := normalizeAllowedIP(*req.AllowedIP)
-		if err != nil {
-			return nil, err
-		}
-		if normalized == "" {
-			client.AllowedIPs = []string{}
-		} else {
-			client.AllowedIPs = []string{normalized}
-		}
-	}
-	if req.TrafficLimitGB != nil {
-		if *req.TrafficLimitGB < 0 {
-			return nil, fmt.Errorf("traffic limit cannot be negative (0 means unlimited)")
-		}
-		client.TrafficLimitGB = *req.TrafficLimitGB
-	}
-	if req.TrafficResetCycle != nil {
-		cycle, ok := NormalizeTrafficCycle(*req.TrafficResetCycle)
-		if !ok {
-			return nil, fmt.Errorf("%w: %q (use daily, weekly, monthly, or an empty value for none)",
-				ErrInvalidTrafficCycle, *req.TrafficResetCycle)
-		}
-		// Anchored only when the cycle actually changes. Re-sending the same cycle as
-		// part of an unrelated edit must not restart the period, or a subscriber whose
-		// note happens to be edited every month would never reach a rollover at all.
-		if cycle != TrafficCycleNone && client.TrafficResetCycle != cycle {
-			client.TrafficResetAnchor = time.Now()
-			client.TrafficResetCount = 0
-		}
-		client.TrafficResetCycle = cycle
-	}
-	if req.ExpiresAt != nil {
-		client.ExpiresAt = *req.ExpiresAt
-	}
-	if req.DaysToAdd != nil && *req.DaysToAdd != 0 {
-		base := client.ExpiresAt
-		if base.IsZero() || time.Now().After(base) {
-			base = time.Now()
-		}
-		client.ExpiresAt = base.Add(time.Duration(*req.DaysToAdd) * 24 * time.Hour)
-	}
-	if req.Enabled != nil {
-		client.Enabled = *req.Enabled
-	}
-	if req.Note != nil {
-		client.Note = *req.Note
-	}
-	if req.CustomPolicies != nil {
-		client.CustomPolicies = *req.CustomPolicies
-	}
-	if req.MaxDevices != nil {
-		// Clamp on write so a stored record is always in range; the registration
-		// path clamps again on read, so an out-of-range legacy value is harmless.
-		client.MaxDevices = database.NormalizeMaxDevices(*req.MaxDevices)
-		// Shrinking the limit trims the oldest bindings immediately, so the panel
-		// figure and the resolver agree without waiting for the next registration.
-		if len(client.AllowedIPs) > client.MaxDevices {
-			client.AllowedIPs = client.AllowedIPs[len(client.AllowedIPs)-client.MaxDevices:]
-		}
-	}
-
-	if err := s.db.SaveClient(*client); err != nil {
 		return nil, err
 	}
 
 	s.reloadCache()
-	return client, nil
+	return out, nil
 }
 
 func (s *ClientService) RegenerateUUID(id string) (string, error) {
-	client, err := s.db.GetClient(id)
-	if err != nil {
-		return "", err
-	}
+	// Atomic read-modify-write (audit fix): the UUID is the client's identity in
+	// links and API calls, so losing a concurrent bind to a stale whole-record
+	// save here would silently re-map a subscriber's traffic.
 	newUUID := database.GenerateUUID()
-	client.UUID = newUUID
-	if err := s.db.SaveClient(*client); err != nil {
+	if _, err := s.db.UpdateClient(id, func(client *database.Client) error {
+		client.UUID = newUUID
+		return nil
+	}); err != nil {
 		return "", err
 	}
 	s.reloadCache()
@@ -554,22 +573,25 @@ func (s *ClientService) RegenerateUUID(id string) (string, error) {
 // subscriber by their current address, which moves whenever their ISP reassigns
 // it, so the list holds at most one entry — see registerIP, which does the same
 // thing when the subscriber's own portal visit reports a new address.
+//
+// The normalization runs before the transaction (it is validation of the
+// operator's own argument, not of stored state); the read and the write inside
+// UpdateClient are atomic, so a bind landing mid-write is not overwritten.
 func (s *ClientService) SetClientIP(id string, ip string) error {
 	normalized, err := normalizeAllowedIP(ip)
 	if err != nil {
 		return err
 	}
-	client, err := s.db.GetClient(id)
+	_, err = s.db.UpdateClient(id, func(client *database.Client) error {
+		if normalized == "" {
+			client.AllowedIPs = []string{}
+		} else {
+			client.AllowedIPs = []string{normalized}
+		}
+		client.LastSeen = time.Now()
+		return nil
+	})
 	if err != nil {
-		return err
-	}
-	if normalized == "" {
-		client.AllowedIPs = []string{}
-	} else {
-		client.AllowedIPs = []string{normalized}
-	}
-	client.LastSeen = time.Now()
-	if err := s.db.SaveClient(*client); err != nil {
 		return err
 	}
 	s.reloadCache()
@@ -583,21 +605,21 @@ func (s *ClientService) SetClientIP(id string, ip string) error {
 // the only route that can clear one. Normalising the argument would make those
 // entries unremovable.
 func (s *ClientService) RemoveClientIP(id string, ip string) error {
-	client, err := s.db.GetClient(id)
-	if err != nil {
-		return err
-	}
-	// Non-nil even when it empties the list: a nil slice marshals as JSON null, and
-	// the dashboard iterates this field. Every other write path here stores
-	// []string{} for "no address", so this one should not be the odd one out.
-	newIPs := []string{}
-	for _, cur := range client.AllowedIPs {
-		if cur != ip {
-			newIPs = append(newIPs, cur)
+	_, err := s.db.UpdateClient(id, func(client *database.Client) error {
+		// Non-nil even when it empties the list: a nil slice marshals as JSON null,
+		// and the dashboard iterates this field. Every other write path here
+		// stores []string{} for "no address", so this one should not be the odd
+		// one out.
+		newIPs := []string{}
+		for _, cur := range client.AllowedIPs {
+			if cur != ip {
+				newIPs = append(newIPs, cur)
+			}
 		}
-	}
-	client.AllowedIPs = newIPs
-	if err := s.db.SaveClient(*client); err != nil {
+		client.AllowedIPs = newIPs
+		return nil
+	})
+	if err != nil {
 		return err
 	}
 	s.reloadCache()
@@ -605,17 +627,19 @@ func (s *ClientService) RemoveClientIP(id string, ip string) error {
 }
 
 func (s *ClientService) RenewClient(id string, days int) error {
-	client, err := s.db.GetClient(id)
+	// Atomic (audit fix): the renewal also re-enables the account, so a
+	// non-atomic read-modify-write could resurrect a record an operator had
+	// suspended in the same instant.
+	_, err := s.db.UpdateClient(id, func(client *database.Client) error {
+		base := client.ExpiresAt
+		if base.IsZero() || time.Now().After(base) {
+			base = time.Now()
+		}
+		client.ExpiresAt = base.Add(time.Duration(days) * 24 * time.Hour)
+		client.Enabled = true
+		return nil
+	})
 	if err != nil {
-		return err
-	}
-	base := client.ExpiresAt
-	if base.IsZero() || time.Now().After(base) {
-		base = time.Now()
-	}
-	client.ExpiresAt = base.Add(time.Duration(days) * 24 * time.Hour)
-	client.Enabled = true
-	if err := s.db.SaveClient(*client); err != nil {
 		return err
 	}
 	s.reloadCache()
@@ -713,20 +737,22 @@ func (s *ClientService) RegisterIP(token, secret, newIP string) (*database.Clien
 // secret stops working the moment this returns — that immediacy is what makes
 // a circulated secret revocable.
 func (s *ClientService) RegenerateRegisterSecret(id string) (string, error) {
-	client, err := s.db.GetClient(id)
-	if err != nil {
-		return "", err
-	}
-	client.RegisterSecret = GenerateRegisterSecret()
-	if err := s.db.SaveClient(*client); err != nil {
+	// Atomic (audit fix): a subscriber bind landing between the read and the
+	// save would otherwise be overwritten by the stale whole-record write, and
+	// the regenerated secret would be stored next to a lost binding.
+	secret := GenerateRegisterSecret()
+	if _, err := s.db.UpdateClient(id, func(client *database.Client) error {
+		client.RegisterSecret = secret
+		return nil
+	}); err != nil {
 		return "", err
 	}
 	s.mu.Lock()
 	if cur, ok := s.idMap[id]; ok {
-		cur.RegisterSecret = client.RegisterSecret
+		cur.RegisterSecret = secret
 	}
 	s.mu.Unlock()
-	return client.RegisterSecret, nil
+	return secret, nil
 }
 
 // RegisterSecretFor returns the current registration secret of one account,
@@ -789,16 +815,19 @@ func (s *ClientService) DeleteClient(id string) error {
 }
 
 func (s *ClientService) ToggleClient(id string, enabled bool) (*database.Client, error) {
-	c, err := s.db.GetClient(id)
-	if err != nil {
+	// Atomic (audit fix): this is the operator's suspension switch. A bind in
+	// flight used to be able to re-enable a suspended account by saving its
+	// stale whole record over the operator's write.
+	var out *database.Client
+	if _, err := s.db.UpdateClient(id, func(c *database.Client) error {
+		c.Enabled = enabled
+		out = c
+		return nil
+	}); err != nil {
 		return nil, err
 	}
-	c.Enabled = enabled
-	err = s.db.SaveClient(*c)
-	if err == nil {
-		s.reloadCache()
-	}
-	return c, err
+	s.reloadCache()
+	return out, nil
 }
 
 // StartExpirationWatcher runs the periodic account sweep until the returned
@@ -857,23 +886,36 @@ func (s *ClientService) deactivateExpired(clients []database.Client, now time.Ti
 			continue
 		}
 		id := clients[i].ID
-		stored, err := s.db.GetClient(id)
-		if err != nil || stored == nil {
+		// One transaction per account: the gate (still enabled and expired) and
+		// the disable commit together, so a renewal or a subscriber bind that
+		// lands inside this window is never clobbered by a stale whole-record
+		// write — which used to leave an account disabled with no self-heal.
+		var name string
+		dis, err := s.db.UpdateClient(id, func(stored *database.Client) error {
+			if !stored.Enabled || stored.ExpiresAt.IsZero() || !now.After(stored.ExpiresAt) {
+				return errSweepSkip
+			}
+			stored.Enabled = false
+			name = stored.Name
+			return nil
+		})
+		if err != nil {
+			if !errors.Is(err, errSweepSkip) {
+				log.Printf("[ClientService] Could not deactivate the expired account %s: %v", id, err)
+			}
 			continue
 		}
-		if !stored.Enabled || stored.ExpiresAt.IsZero() || !now.After(stored.ExpiresAt) {
-			continue // renewed or already disabled since the list was taken
-		}
-		stored.Enabled = false
-		if err := s.db.SaveClient(*stored); err != nil {
-			log.Printf("[ClientService] Could not deactivate the expired account %s: %v", id, err)
-			continue
-		}
+		_ = dis
 		changed++
-		log.Printf("[ClientService] Deactivated expired account: %s (%s)", stored.Name, id)
+		log.Printf("[ClientService] Deactivated expired account: %s (%s)", name, id)
 	}
 	return changed
 }
+
+// errSweepSkip is the sentinel a sweep's per-account mutation returns to mean
+// "still valid, leave it alone". The transaction rolls back and the caller
+// treats it as a skip rather than a failure.
+var errSweepSkip = errors.New("sweep: account is no longer eligible, skipping")
 
 func (s *ClientService) ResetClientTraffic(id string) error {
 	s.flushMu.Lock()
@@ -883,12 +925,12 @@ func (s *ClientService) ResetClientTraffic(id string) error {
 	// add pre-reset bytes on top of the zero written here.
 	s.traffic.reset(id)
 
-	client, err := s.db.GetClient(id)
-	if err != nil {
-		return err
-	}
-	client.TrafficUsedBytes = 0
-	if err := s.db.SaveClient(*client); err != nil {
+	// Atomic (audit fix): resetting traffic while a bind is in flight must not
+	// save a stale record that drops the subscriber's live address.
+	if _, err := s.db.UpdateClient(id, func(client *database.Client) error {
+		client.TrafficUsedBytes = 0
+		return nil
+	}); err != nil {
 		return err
 	}
 	s.reloadCache()

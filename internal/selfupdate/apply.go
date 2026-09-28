@@ -17,11 +17,62 @@ import (
 
 // ghRelease is the slice of the GitHub Releases API we consume.
 type ghRelease struct {
-	TagName string `json:"tag_name"`
-	Assets  []struct {
+	TagName    string `json:"tag_name"`
+	Prerelease bool   `json:"prerelease"`
+	Draft      bool   `json:"draft"`
+	Assets     []struct {
 		Name string `json:"name"`
 		URL  string `json:"browser_download_url"`
 	} `json:"assets"`
+}
+
+// tagMatchesTarget reports whether a release tag is precisely the target
+// version, not merely a superstring of it. strings.Contains(tag, "2.6.0")
+// accepts v2.6.0-beta.9, v2.6.01 and v12.6.0 — an operator who asked for 2.6.0
+// can silently receive a beta (or, on a differently-segmented tag line, an
+// unintended build). A tag is v<semver>[-channel[.n]]: the numeric core must
+// equal the target exactly, and only the channel/prerelease suffix may follow.
+func tagMatchesTarget(tag, target string) bool {
+	tag = strings.TrimPrefix(tag, "v")
+	target = strings.TrimPrefix(target, "v")
+	core, suffix := tag, ""
+	if i := strings.IndexByte(tag, '-'); i >= 0 {
+		core, suffix = tag[:i], tag[i+1:]
+	}
+	if core != targetNumericCore(target) {
+		return false
+	}
+	// The channel-suffix rule:
+	//   - a final tag (no suffix) may satisfy any target: the operator's
+	//     intent is "at least this version", and the final build is the release
+	//     the target names;
+	//   - a channel tag satisfies a target only when that target names the SAME
+	//     channel (beta → beta), never a final request — a stray beta must not
+	//     masquerade as the final build an operator asked for.
+	if suffix == "" {
+		return true
+	}
+	return targetHasChannel(target) && strings.HasPrefix(suffix, targetChannel(target))
+}
+
+func targetNumericCore(v string) string {
+	if i := strings.IndexByte(v, '-'); i >= 0 {
+		return v[:i]
+	}
+	return v
+}
+
+func targetChannel(v string) string {
+	if i := strings.IndexByte(v, '-'); i >= 0 {
+		return v[i+1:]
+	}
+	return ""
+}
+
+// targetHasChannel reports whether the target itself names a channel suffix —
+// the "beta" in 2.6.0-beta. A channel tag can satisfy only such a target.
+func targetHasChannel(v string) bool {
+	return strings.IndexByte(v, '-') >= 0
 }
 
 // apply runs the full update pipeline. Every step updates progress so the modal
@@ -36,9 +87,12 @@ func (u *Updater) apply(ctx context.Context) error {
 		return err
 	}
 
-	// 2. Fetch and parse checksums.txt, then download the binary and verify it
-	//    BEFORE anything on disk is touched.
-	u.setProgress("verify", "Fetching checksums…", 15)
+	// 2. Fetch checksums.txt and verify the release signature over its raw
+	//    bytes BEFORE parsing anything. Only then is the expected hash worth
+	//    trusting — both artifacts come from the same origin, so without the
+	//    signature the hash comparison is an unauthenticated self-consistency
+	//    test, not origin authentication.
+	u.setProgress("verify", "Fetching and verifying signed checksums…", 15)
 	wantSum, err := u.expectedSum(ctx, sumURL, binName)
 	if err != nil {
 		return err
@@ -52,9 +106,9 @@ func (u *Updater) apply(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	u.setProgress("verify", "Verifying signature…", 70)
+	u.setProgress("verify", "Verifying binary digest and signature…", 70)
 	if !strings.EqualFold(gotSum, wantSum) {
-		return fmt.Errorf("checksum mismatch: the downloaded binary does not match the release's checksums.txt (refusing to install)")
+		return fmt.Errorf("checksum mismatch: the downloaded binary does not match the release's signed checksums.txt (refusing to install)")
 	}
 
 	// 3. Back up the data files (never touched by the swap, but a pre-update
@@ -64,9 +118,10 @@ func (u *Updater) apply(ctx context.Context) error {
 		return fmt.Errorf("pre-update backup failed, aborting before any change: %w", err)
 	}
 
-	// 4. Swap the binary atomically, keeping the old one as .bak for rollback.
+	// 4. Swap the binary atomically (re-hashing first), keeping the old one as
+	//    .bak for rollback.
 	u.setProgress("swap", "Installing the new binary…", 88)
-	if err := u.swapBinary(tmpPath); err != nil {
+	if err := u.swapBinary(tmpPath, gotSum); err != nil {
 		return err
 	}
 
@@ -113,10 +168,14 @@ func (u *Updater) resolveAssets(ctx context.Context, binName string) (binURL, su
 		return "", "", "", fmt.Errorf("parse releases: %w", err)
 	}
 
-	// The list is newest-first; take the first release whose tag carries the
-	// target version (handles the vX.Y.Z-beta.N tag suffix).
+	// The list is newest-first; take the newest NON-draft release whose tag is
+	// exactly the target version (a beta channel suffix is accepted only when
+	// the target itself names that channel), and which carries both assets.
 	for _, rel := range releases {
-		if !strings.Contains(rel.TagName, st.Latest) {
+		if rel.Draft {
+			continue
+		}
+		if !tagMatchesTarget(rel.TagName, st.Latest) {
 			continue
 		}
 		for _, a := range rel.Assets {
@@ -134,8 +193,12 @@ func (u *Updater) resolveAssets(ctx context.Context, binName string) (binURL, su
 	return "", "", "", fmt.Errorf("no release asset %q with a checksums.txt found for version %s", binName, st.Latest)
 }
 
-// expectedSum downloads checksums.txt and returns the hex SHA-256 recorded for
-// binName. The file is `sha256sum *` output: "<hex>  <filename>" per line.
+// expectedSum downloads checksums.txt, verifies the detached release signature
+// over its raw bytes, and returns the hex SHA-256 it records for binName. The
+// signature gate runs BEFORE the parse: an unsigned or wrongly-signed bundle is
+// refused whatever it says, so a same-origin attacker who can replace both
+// artifacts still cannot produce a bundle this daemon will accept. The file is
+// `sha256sum *` output: "<hex>  <filename>" per line.
 func (u *Updater) expectedSum(ctx context.Context, sumURL, binName string) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, sumURL, nil)
 	if err != nil {
@@ -151,6 +214,9 @@ func (u *Updater) expectedSum(ctx context.Context, sumURL, binName string) (stri
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
+		return "", err
+	}
+	if err := verifyChecksumsSignature(body, resp.Header.Get(checksumsSignatureHeader)); err != nil {
 		return "", err
 	}
 	for _, line := range strings.Split(string(body), "\n") {
@@ -217,10 +283,21 @@ func (u *Updater) backupData() error {
 	return nil
 }
 
-// swapBinary makes the downloaded file executable, keeps the current binary as
-// <bin>.bak for rollback, and renames the new one into place. The rename is
-// atomic within one filesystem, so a crash cannot leave a half-written binary.
-func (u *Updater) swapBinary(tmpPath string) error {
+// swapBinary re-reads and re-hashes the verified download (binding the bytes
+// that will be renamed to the bytes that were verified — a chmod'd file on a
+// writable directory could otherwise be swapped between the check and the
+// rename), keeps the current binary as <bin>.bak for rollback, and renames the
+// new one into place. The rename is atomic within one filesystem, so a crash
+// cannot leave a half-written binary.
+func (u *Updater) swapBinary(tmpPath string, wantSum string) error {
+	// Re-hash the file as it sits on disk right before it becomes the target.
+	raw, err := os.ReadFile(tmpPath)
+	if err != nil {
+		return fmt.Errorf("re-read the downloaded binary: %w", err)
+	}
+	if got := sha256.Sum256(raw); !strings.EqualFold(hex.EncodeToString(got[:]), wantSum) {
+		return fmt.Errorf("the downloaded file changed between download and install (refusing to install)")
+	}
 	if err := os.Chmod(tmpPath, 0o755); err != nil {
 		return err
 	}

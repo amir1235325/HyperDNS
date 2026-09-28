@@ -109,6 +109,11 @@ type WebServer struct {
 	// name hot-swap through the holder and never call it. The error is the
 	// rebuild's: a listener that did not come back up is a failed save.
 	dnsRebind func(src *certHolder) error
+	// selfDomainsRefresh re-applies the resolver's self-name set after a
+	// runtime domain change (v2.8, audit needs-validation fix). Installed by
+	// main; nil in the lighter test harnesses, where refreshSelfDomains is a
+	// no-op.
+	selfDomainsRefresh func(tlsDomain, dotDomain, subDomain string)
 
 	// totpReplay makes validated TOTP codes single-use across every gated
 	// endpoint (login included) — one observed code must not authorise every
@@ -217,6 +222,36 @@ func (ws *WebServer) SetControlState(benchmark *service.BenchmarkRunner, lockout
 // record; main passes it in through the same call.
 func (ws *WebServer) SetSubscriptionSettings(s *database.SubscriptionSettings) {
 	ws.subSettings = s
+}
+
+// SetSelfDomainRefresher wires the resolver's self-name set refresher. When the
+// operator changes the panel/subscriber/DoT domain at runtime, the listener set
+// and certificates are re-bound already — the self-name set (which names this
+// server's own service names so a locked-out subscriber can still resolve the
+// portal link) was only installed at startup, so a domain change left the RETIRED
+// name answering and the new one refusing. main installs a refresh function here
+// (audit needs-validation fix, v2.8).
+func (ws *WebServer) SetSelfDomainRefresher(fn func(tlsDomain, dotDomain, subDomain string)) {
+	ws.selfDomainsRefresh = fn
+}
+
+// refreshSelfDomains re-applies the resolver's self-name set from the live
+// settings, so a runtime domain change takes effect without a restart. A nil
+// refresher (test harness) is a no-op.
+func (ws *WebServer) refreshSelfDomains() {
+	if ws.selfDomainsRefresh == nil {
+		return
+	}
+	var tlsDomain, dotDomain string
+	if ws.tlsSettings != nil {
+		tlsDomain = ws.tlsSettings.Domain
+		dotDomain = ws.tlsSettings.DoTDomain
+	}
+	subDomain := ""
+	if ws.subSettings != nil {
+		subDomain = ws.subSettings.Snapshot().Domain
+	}
+	ws.selfDomainsRefresh(tlsDomain, dotDomain, subDomain)
 }
 
 // SetCustomGroupService wires the named-custom-policy-group manager. Set by the
@@ -1429,12 +1464,16 @@ func (ws *WebServer) handleConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 // accessConfig holds optional DoH bearer tokens managed from the dashboard.
+// accessConfig is the persisted "access" record. allow_all is part of it (the
+// same record the access-mode switch writes), so the GET side can report the
+// live mode to the dashboard without a second endpoint.
 type accessConfig struct {
+	AllowAll  bool     `json:"allow_all"`
 	DoHTokens []string `json:"doh_tokens"`
 }
 
 func (ws *WebServer) loadAccessConfig() accessConfig {
-	acc := accessConfig{DoHTokens: []string{}}
+	acc := accessConfig{AllowAll: ws.clients.IsAllowAll(), DoHTokens: []string{}}
 	_ = ws.db.GetSetting("access", &acc)
 	if acc.DoHTokens == nil {
 		acc.DoHTokens = []string{}
@@ -1456,6 +1495,11 @@ func (ws *WebServer) handleConfigAccess(w http.ResponseWriter, r *http.Request) 
 		if acc.DoHTokens == nil {
 			acc.DoHTokens = []string{}
 		}
+		// allow_all is written by the dedicated /api/access/mode route and is
+		// persisted there; keep the value the store already holds so this
+		// handler cannot silently flip the access mode as a side effect of
+		// saving tokens (the record covers both fields).
+		acc.AllowAll = ws.clients.IsAllowAll()
 		// Persist first, and only claim success if the write landed: the previous
 		// code discarded this error and answered {"success":true} even when the
 		// save failed.
@@ -1544,7 +1588,15 @@ func (ws *WebServer) handleConfigRules(w http.ResponseWriter, r *http.Request) {
 			if !isBool {
 				continue
 			}
-			_ = ws.db.SavePolicy(database.Policy{Key: key, Name: presetName, Category: "preset", Enabled: enabled})
+			// Persist first and check the error (audit fix, v2.8): a discarded
+			// error meant a failing store write still applied the rule to the
+			// live matcher and answered success, so the operator's change looked
+			// saved but silently reverted on the next restart. The live push now
+			// happens only after the write has actually landed.
+			if err := ws.db.SavePolicy(database.Policy{Key: key, Name: presetName, Category: "preset", Enabled: enabled}); err != nil {
+				httpx.WriteJSONError(w, http.StatusInternalServerError, "Could not save the policy settings")
+				return
+			}
 			if ws.matcher != nil {
 				ws.matcher.SetRuleEnabled(presetName, enabled)
 			}
@@ -1578,15 +1630,26 @@ func (ws *WebServer) handleConfigRules(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Persist custom lists (encoded inside Policy.CustomDomains)
-	_ = ws.db.SavePolicy(database.Policy{Key: "custom_proxied", Name: "Custom Proxied Domains", Category: "custom", Enabled: true, CustomDomains: customProxied})
-	_ = ws.db.SavePolicy(database.Policy{Key: "custom_blocked", Name: "Custom Blocked Domains", Category: "custom", Enabled: true, CustomDomains: customBlocked})
-	_ = ws.db.SavePolicy(database.Policy{Key: "custom_direct", Name: "Custom Direct Domains", Category: "custom", Enabled: true, CustomDomains: customDirect})
+	// Persist custom lists (encoded inside Policy.CustomDomains). Every error is
+	// checked and the first failure answers 500 BEFORE the live matcher is
+	// touched (audit fix, v2.8): applying a rule that did not persist, while
+	// telling the operator it saved, hides the failure until a restart reverts it.
+	customSaves := []database.Policy{
+		{Key: "custom_proxied", Name: "Custom Proxied Domains", Category: "custom", Enabled: true, CustomDomains: customProxied},
+		{Key: "custom_blocked", Name: "Custom Blocked Domains", Category: "custom", Enabled: true, CustomDomains: customBlocked},
+		{Key: "custom_direct", Name: "Custom Direct Domains", Category: "custom", Enabled: true, CustomDomains: customDirect},
+	}
 	recordEntries := make([]string, 0, len(customRecords))
 	for d, ip := range customRecords {
 		recordEntries = append(recordEntries, d+"="+ip)
 	}
-	_ = ws.db.SavePolicy(database.Policy{Key: "custom_records", Name: "Custom A Records", Category: "custom", Enabled: true, CustomDomains: recordEntries})
+	customSaves = append(customSaves, database.Policy{Key: "custom_records", Name: "Custom A Records", Category: "custom", Enabled: true, CustomDomains: recordEntries})
+	for _, p := range customSaves {
+		if err := ws.db.SavePolicy(p); err != nil {
+			httpx.WriteJSONError(w, http.StatusInternalServerError, "Could not save the policy settings")
+			return
+		}
+	}
 
 	// Apply custom lists to the live matcher and flush stale cache entries
 	if ws.matcher != nil {
@@ -1920,7 +1983,14 @@ func (ws *WebServer) handleAccessMode(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteJSONError(w, http.StatusBadRequest, "Invalid request")
 		return
 	}
-	ws.clients.SetAllowAll(req.AllowAll)
+	// Persist first, apply second, answer honestly (audit fix, v2.8): the DoH
+	// gate's handler already follows this pattern. A failed store write must not
+	// read back as a confirmed switch — especially here, where a restart with an
+	// unwritten allow_all silently reopens the resolver to the public.
+	if err := ws.clients.SetAllowAll(req.AllowAll); err != nil {
+		httpx.WriteJSONError(w, http.StatusInternalServerError, "Could not save the access mode")
+		return
+	}
 	_ = json.NewEncoder(w).Encode(map[string]bool{"allow_all": req.AllowAll})
 }
 

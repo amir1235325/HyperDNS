@@ -6,6 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
+## 🔐 [v2.8.0-beta.1] — Signed Self-Update, Atomic Operator Writes & an Audit Pass
+
+Codename **HyperFORGE**. A security release responding to an independent security audit of v2.6/v2.7: the update channel is now cryptographically signed, every operator write path is atomic, and the two "answered success but didn't persist" anti-patterns left over from the v2.6 pass are gone.
+
+### 🔐 Security
+- **The self-update channel is signed (audit #1, HIGH).** The dashboard updater used to compare the downloaded binary's SHA-256 against a `checksums.txt` fetched from the same origin — an unauthenticated self-consistency test, while the docs and the progress message called it "signed". Now every release bundle carries a **detached ed25519 signature over `checksums.txt`**, the public key is pinned in the binary (the private half lives only in the `RELEASE_SIGNING_KEY` Actions secret — the same pattern as the preset channel), and the signature is verified over the raw bytes *before* the hash is even parsed. An unsigned or wrongly-signed bundle is refused, whatever it claims. The updater also **never honours a proxy** (a locally-trusted TLS-intercepting middlebox can no longer be walked into), **re-hashes the file immediately before installing** (so the renamed bytes are provably the verified bytes), and selects releases by **exact version match** rather than substring, so "apply 2.6.0" can no longer install a `v2.6.0-beta.9`.
+- **Operator writes no longer erase a subscriber's live bind (audit #3, MEDIUM).** The nine operator/sweep paths — update client, regenerate UUID, set/remove IP, renew, toggle, regenerate the register secret, the expiry sweep, and both traffic-cycle resets — used to read a record in one transaction and save the whole record in a second. A bind committing in between was silently overwritten (the subscriber lost DNS; the freed IP became claimable; the sweep variant could leave an account disabled with no self-heal). They now all run through one `DB.UpdateClient` read-modify-write, so check and commit are atomic — the same fix `registerIP` already had.
+- **The access-mode and policy-rules saves stop lying (audit #4/#6).** Both persisted their state, discarded the error, pushed the change to the live resolver and answered `{"success":true}` — so a failed store write meant the rule/mode was live until the next restart, then silently reverted (for `allow_all`, re-opening the resolver to the public). Both now persist first, answer **500** when the write fails, and only then apply to the live state; the dashboard shows the failure and snaps the switch back to the server's real value.
+- **The SVG icon `url()` guard is case-insensitive and scans every occurrence (audit #5, LOW).** The re-encode allowlist was sound, but one guard was a case-sensitive prefix test, so `fill="URL(https://…)"` and a second `url()` after an internal one were stored verbatim. The guard now inspects every `url()` in the post-decode value, tolerates quotes and whitespace, and accepts only internal fragments.
+- **A wrong-typed migration marker now fails closed (audit #7, LOW).** A marker that is valid JSON of the wrong type (a number, an array, an object with non-boolean members) used to pass the boot-time settings validation and then make the bootstrap migration *skip* its `allow_all=false` convergence, booting a legacy install as an open resolver. The `migration` key is now schema-validated (corruption refuses the boot) and the migration itself distinguishes "absent" from "unreadable" and converges to the safe default either way.
+
+### 🖼 Fixed
+- **A runtime domain change now refreshes the resolver's self-name set.** The set that lets a locked-out subscriber resolve the portal link was installed only at startup, so changing the panel/subscriber domain left the retired name answering and the new one refused until a restart. Saving the subscription settings re-applies it, and the panel-domain rebind does too.
+- **The SSE ticket store is bounded** at 64 outstanding tickets per session (with a 429 over the cap), so the panel cannot grow unbounded memory in the process that also serves DNS.
+- **A weak admin password is refused at boot** (under 12 characters) and a legacy `config.json` still carrying the placeholder `jwt_secret` is called out in the log — two root-cause guards from the audit's history finding.
+
+### 🧪 Quality gates this release passed
+- `go build ./...` (host + linux cross), `go vet ./...`, all packages green with `-count=1`; `web/js/app.js` passes `node --check`.
+- New tests: signature accept/reject (wrong key, tampered body, missing/truncated/garbage signature), exact-tag matching, the no-proxy transport, atomic `UpdateClient` (fresh record returned, callback error rolls back, missing id refused), the wrong-typed migration marker failing closed in six shapes, the SSE-ticket cap and its 429, and every external `url()` spelling being rejected while internal ones survive.
+
+### ⚠️ Upgrade notes
+- **The updater accepts only signed releases from this line onward**, and older installs asking *this* daemon to update them will download signed bundles — no action needed. A release published before the signing step exists cannot be installed by a v2.8+ daemon; use `install.sh` for those.
+- The signing keypair is new for this release: set the `RELEASE_SIGNING_KEY` repository secret (base64 of the raw 32-byte ed25519 key) before publishing a tag. `tools/releasesign` verifies signatures with the exact pinned key the daemon uses.
+
+---
+
 ## 🎨 [v2.7.0-beta.1] — Real Policy Icons, Custom Group Icons, Working Theme URL Source
 
 Codename **HyperFORGE**. An identity release: policy cards carry their real service logos, custom groups get operator-uploaded icons, and the portal theme feature loses the two defects that kept parts of it invisible.

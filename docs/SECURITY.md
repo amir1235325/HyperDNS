@@ -26,7 +26,8 @@ and how to report a problem.
 
 | Version | Status | Security fixes |
 | :--- | :--- | :--- |
-| `v2.7.0-beta` (HyperFORGE) | Current beta | ✅ Yes |
+| `v2.8.0-beta` (HyperFORGE) | Current beta | ✅ Yes |
+| `v2.7.0-beta` (HyperFORGE) | Superseded | ❌ Upgrade first |
 | `v2.6.0-beta` (HyperFORGE) | Superseded | ❌ Upgrade first |
 | `v2.5.0-beta` (HyperFORGE) | Superseded | ❌ Upgrade first |
 | `v2.4.0-beta` (HyperFORGE) | Superseded | ❌ Upgrade first |

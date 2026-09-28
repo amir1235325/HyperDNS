@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -205,6 +206,7 @@ func main() {
 	// database always take precedence over these file defaults).
 	var fileAccess *AccessConfig
 	if *configPath != "" {
+		warnExampleJWTSecret(*configPath)
 		fileAccess = applyConfigFile(*configPath, serverSettings, dnsSettings, sniSettings, tlsSettings)
 	}
 
@@ -289,6 +291,15 @@ func main() {
 	if serverSettings.AdminPassword == "" || serverSettings.AdminPassword == exampleConfigPasswordPlaceholder {
 		log.Printf("[Main] config.json carries no usable admin password (%q); generating one instead.", serverSettings.AdminPassword)
 		serverSettings.AdminPassword = generatedAdminPassword
+	}
+	// A weak password is the era's real finding (audit #2): the tagged history
+	// carries a live install whose admin_password was a five-digit number. A
+	// short password silently weakens every secret that protects it, so refuse
+	// it at boot with the fix in the message rather than booting a panel whose
+	// credential can be guessed.
+	if len(serverSettings.AdminPassword) < minAdminPasswordLength {
+		log.Printf("[Main] Refusing to start: server.admin_password is shorter than %d characters. Set a strong one in config.json (or clear the field to have one generated and printed once).", minAdminPasswordLength)
+		os.Exit(1)
 	}
 	if serverSettings.AdminUsername == "" {
 		serverSettings.AdminUsername = "admin"
@@ -492,11 +503,10 @@ func main() {
 	// answers them with the public IP ahead of the access whitelist. Without this,
 	// a subscriber whose IP changed — and has therefore fallen off the whitelist —
 	// gets REFUSED for the very portal link they need to re-register from.
-	dnsHandler.SetSelfDomains([]string{
-		tlsSettings.Domain,
-		tlsSettings.DoTDomain,
-		subscriptionSettings.Domain,
-	})
+	applySelfDomains := func(tlsDomain, dotDomain, subDomain string) {
+		dnsHandler.SetSelfDomains([]string{tlsDomain, dotDomain, subDomain})
+	}
+	applySelfDomains(tlsSettings.Domain, tlsSettings.DoTDomain, subscriptionSettings.Domain)
 	dohHandler := dns.NewDoHHandler(dnsHandler)
 
 	// DoH bearer tokens (v2.1.0 B-07 remediation): config.json's access block
@@ -579,6 +589,13 @@ func main() {
 	webServer.SetSubscriptionSettings(subscriptionSettings)
 	webServer.SetAuthSettings(authSettings)
 	webServer.SetCustomGroupService(customGroupService)
+	// v2.8: a runtime domain change re-applies the resolver's self-name set, so a
+	// retired operator domain stops answering and the new one starts (audit
+	// needs-validation fix — before, only the startup set existed).
+	webServer.SetSelfDomainRefresher(func(tlsDomain, dotDomain, subDomain string) {
+		applySelfDomains(tlsDomain, dotDomain, subDomain)
+		log.Printf("[Main] Self-service DNS names refreshed (panel %q, DoT %q, portal %q)", tlsDomain, dotDomain, subDomain)
+	})
 
 	// v2.6 self-update: let the dashboard check the main-branch version and apply
 	// a SHA256-verified binary swap + restart. It is handed the running binary and
@@ -901,6 +918,45 @@ func stdinIsInteractive(f *os.File) bool {
 // public config.example.json. Anyone can read it, so it must never survive as a
 // working login — see the guard in main().
 const exampleConfigPasswordPlaceholder = "CHANGE-ME-BEFORE-FIRST-RUN"
+
+// minAdminPasswordLength is the shortest admin password the daemon will boot
+// with (audit finding #2): a weak credential neutralises every other secret the
+// install holds, and the tagged history shows a live install whose admin
+// password was a five-digit number. A shorter value is refused with the fix in
+// the message; clearing the field entirely still generates and prints a strong
+// one.
+const minAdminPasswordLength = 12
+
+// exampleConfigJWTSecretPlaceholder is the era default that shipped in the
+// repository's public config files (`jwt_secret` in the v1.x config.json). A
+// jwt_secret equal to it is forgeable session material. Nothing in the current
+// build reads a config-file jwt_secret, so the value is inert — but a
+// deployment that carried an old config forward must not leave it sitting there,
+// and the install/startup path now says so out loud.
+const exampleConfigJWTSecretPlaceholder = "hyperdns-super-secret-key-change-me"
+
+// warnExampleJWTSecret notes a legacy config that still carries the placeholder
+// jwt_secret. Informational by design: the field is not read by this build, so
+// refusing to boot over it would take a working resolver down for a value it
+// never uses.
+func warnExampleJWTSecret(configPath string) {
+	if configPath == "" {
+		return
+	}
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		return
+	}
+	var probe struct {
+		Server map[string]any `json:"server"`
+	}
+	if json.Unmarshal(raw, &probe) != nil {
+		return
+	}
+	if v, ok := probe.Server["jwt_secret"].(string); ok && v == exampleConfigJWTSecretPlaceholder {
+		log.Printf("[Main] Warning: %s still carries the placeholder jwt_secret. This build does not read it, but remove the field so a future one cannot.", configPath)
+	}
+}
 
 // generateInitialPassword returns a random admin password for a first run where
 // neither config.json nor the database supplied one. crypto/rand only: a

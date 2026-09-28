@@ -109,6 +109,17 @@ var authoritativeSettingTargets = map[string]func() any{
 			DoHTokens []string `json:"doh_tokens"`
 		}{}
 	},
+	// The migration marker bookkeeping is an object of marker-name -> bool.
+	// Validating it here is what closes audit finding #7: a marker that is valid
+	// JSON of the wrong type (a number, a string, an array, an object with
+	// non-boolean members) used to pass this gate because the key was not in the
+	// map, and the bootstrap migration then skipped its allow_all=false
+	// convergence and booted a legacy install as an open resolver. A wrong-typed
+	// marker is corruption, and corruption fails the boot instead of failing
+	// open. The bootstrap migration's own load path is the second fence.
+	"migration": func() any {
+		return &map[string]bool{}
+	},
 }
 
 func validateSettingSchema(key string, raw json.RawMessage) error {

@@ -1,19 +1,31 @@
 // Package selfupdate implements the dashboard's "check for and apply an update"
 // flow (v2.6): it reads the version published on the project's main branch,
 // compares it with the running build, and — on Linux under systemd — downloads
-// the matching release binary, verifies its SHA-256 against the release's
-// checksums.txt, backs up the data files, swaps the binary atomically, and asks
-// the daemon to restart onto it.
+// the matching release binary, verifies it, backs up the data files, swaps the
+// binary atomically, and asks the daemon to restart onto it.
 //
-// Security posture: the download host is hard-coded (no operator-supplied URL),
-// and a binary is NEVER swapped in unless its SHA-256 matches the value in the
-// release's signed checksums.txt. The data key/db/config are backed up before
-// anything is replaced and are otherwise never touched, so an update cannot lose
-// a subscriber list or an admin credential.
+// Security posture (v2.8, audit finding #1): the download host is hard-coded
+// (no operator-supplied URL), the client never honours a proxy, and a binary is
+// NEVER swapped in unless BOTH conditions hold — its SHA-256 matches the
+// release's checksums.txt, AND that checksums.txt carries a valid ed25519
+// signature from the release signing key. A bare hash compare alone is an
+// unauthenticated self-consistency test: both artifacts come from the same
+// origin, so whoever can serve one can serve the other. The signature is what
+// makes the expected hash trustworthy, and it is verified over the raw file
+// bytes before any parsing happens. This mirrors the preset channel's pinned
+// ed25519 verification (internal/presetupd); the private half lives only in
+// the GitHub Actions release-signing secret, so nothing in this repository can
+// sign a release bundle.
+//
+// The data key/db/config are backed up before anything is replaced and are
+// otherwise never touched, so an update cannot lose a subscriber list or an
+// admin credential.
 package selfupdate
 
 import (
 	"context"
+	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -26,6 +38,62 @@ import (
 
 	"hyperdns/internal/version"
 )
+
+// ReleasePubKey is the ed25519 public key baked into the binary, pinning the
+// only identity whose signatures this daemon will accept for a release bundle
+// (checksums.txt). The private half lives only in the GitHub Actions secret
+// RELEASE_SIGNING_KEY; nothing in this repository may sign a release.
+//
+// To rotate the release identity: generate a fresh keypair, put the private half
+// in the RELEASE_SIGNING_KEY secret, and replace the base64 below — the public
+// key is the 32-byte raw ed25519 key, not a PEM/SPKI wrapper.
+var ReleasePubKey = mustDecodeKey("satTvDtOhSDCypzJ2DfsQtGSpUJrkJgEpu3yrfFFTeI=")
+
+func mustDecodeKey(b64 string) ed25519.PublicKey {
+	raw, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil || len(raw) != ed25519.PublicKeySize {
+		panic("selfupdate: invalid embedded release public key")
+	}
+	return ed25519.PublicKey(raw)
+}
+
+// checksumsSignatureHeader carries the detached signature over the checksums.txt
+// bytes, emitted by the release workflow. It is a header rather than a second
+// file so the signature covers exactly the bytes that were verified: any
+// normalisation on both sides would break the signature, and the header is
+// transported verbatim by HTTP.
+const checksumsSignatureHeader = "X-HyperDNS-Checksums-Signature"
+
+// verifyChecksumsSignatureWith is the parameterised core of the gate, so a test
+// can pin the behaviour against keys it controls without touching the embedded
+// ReleasePubKey.
+func verifyChecksumsSignatureWith(body []byte, header string, pub ed25519.PublicKey) error {
+	if header == "" {
+		return fmt.Errorf("the release carries no checksums signature (refusing an unverified update)")
+	}
+	sig, err := base64.StdEncoding.DecodeString(strings.TrimSpace(header))
+	if err != nil {
+		return fmt.Errorf("the checksums signature is not valid base64: %w", err)
+	}
+	if !ed25519.Verify(pub, body, sig) {
+		return fmt.Errorf("checksums signature verification failed (the bundle was not signed by the release key)")
+	}
+	return nil
+}
+
+// verifyChecksumsSignature checks the detached signature over the raw
+// checksums.txt bytes against the pinned release key. It is the gate that
+// turns the same-origin hash comparison into an authenticated one.
+func verifyChecksumsSignature(body []byte, header string) error {
+	return verifyChecksumsSignatureWith(body, header, ReleasePubKey)
+}
+
+// VerifyChecksumsSignatureForTest exposes the exact gate to the repo-only
+// release-signing tool (tools/releasesign), so a signature that verifies there
+// is bit-for-bit the one the daemon will accept. Not used by the daemon path.
+func VerifyChecksumsSignatureForTest(body []byte, header string) error {
+	return verifyChecksumsSignature(body, header)
+}
 
 const (
 	ghOwner  = "IzumiRain"
@@ -81,6 +149,14 @@ func New(binPath string, dataPaths []string, backupDir string) *Updater {
 		backupDir: backupDir,
 		client: &http.Client{
 			Timeout: 3 * time.Minute, // a whole binary download, not a metadata call
+			Transport: &http.Transport{
+				// Never honour a proxy: an update mechanism that follows
+				// HTTP(S)_PROXY can be walked straight into a TLS-intercepting
+				// middlebox that is trusted locally (CA store), which defeats the
+				// whole origin-authentication chain. Direct is the only safe
+				// default for something whose output is executed as root.
+				Proxy: nil,
+			},
 		},
 	}
 }

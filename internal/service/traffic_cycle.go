@@ -210,14 +210,17 @@ func (s *ClientService) applyTrafficCycles(clients []database.Client, now time.T
 
 // anchorTrafficCycle fixes a cycle's origin at now and starts counting from zero.
 // Callers hold flushMu.
+//
+// Atomic (audit fix): the read happens inside the write transaction, so a
+// subscriber bind committing in the same instant is never overwritten by a
+// stale whole-record save.
 func (s *ClientService) anchorTrafficCycle(id string, now time.Time) bool {
-	client, err := s.db.GetClient(id)
-	if err != nil || client == nil {
-		return false
-	}
-	client.TrafficResetAnchor = now
-	client.TrafficResetCount = 0
-	if err := s.db.SaveClient(*client); err != nil {
+	_, err := s.db.UpdateClient(id, func(client *database.Client) error {
+		client.TrafficResetAnchor = now
+		client.TrafficResetCount = 0
+		return nil
+	})
+	if err != nil {
 		log.Printf("[ClientService] Could not anchor the traffic cycle of %s: %v", id, err)
 		return false
 	}
@@ -238,28 +241,31 @@ func (s *ClientService) resetTrafficCycle(id string, newCount uint64) bool {
 	// between.
 	pending := s.traffic.take(id)
 
-	// Re-read rather than reusing the listed copy. An operator may have raised the
-	// limit or renamed the account since the list was taken, and writing a stale
-	// record back to change one field would silently undo that.
-	client, err := s.db.GetClient(id)
-	if err != nil || client == nil {
-		// The bytes have already left the ledger. Hand them back so a transient read
-		// failure cannot make traffic free; if the account is genuinely gone, the next
-		// flush drops them, which is what it already does for a deleted account.
-		s.traffic.add(id, pending)
-		return false
-	}
-
-	client.TrafficPrevCycleBytes = client.TrafficUsedBytes + pending
-	client.TrafficUsedBytes = 0
-	client.TrafficResetCount = newCount
-	if err := s.db.SaveClient(*client); err != nil {
+	// The gate (does the account still exist?) and the rollover commit happen in
+	// one transaction (audit fix). A bind that lands inside this window is read
+	// as part of the transaction, so it is preserved by the write rather than
+	// overwritten by a stale whole-record save — the same failure mode that used
+	// to erase a subscriber's live address here.
+	var name string
+	var prevBytes uint64
+	_, err := s.db.UpdateClient(id, func(client *database.Client) error {
+		client.TrafficPrevCycleBytes = client.TrafficUsedBytes + pending
+		client.TrafficUsedBytes = 0
+		client.TrafficResetCount = newCount
+		name, prevBytes = client.Name, client.TrafficPrevCycleBytes
+		return nil
+	})
+	if err != nil {
+		// Nothing was written, so the bytes are still owed to the account: hand
+		// them back so a transient failure cannot make traffic free. If the
+		// account is genuinely gone, the next flush drops them, which is what it
+		// already does for a deleted account.
 		s.traffic.add(id, pending)
 		log.Printf("[ClientService] Could not roll over the traffic cycle of %s: %v", id, err)
 		return false
 	}
 
 	log.Printf("[ClientService] Quota period rolled over for %s (%s): %d bytes used in the period that ended",
-		client.Name, id, client.TrafficPrevCycleBytes)
+		name, id, prevBytes)
 	return true
 }

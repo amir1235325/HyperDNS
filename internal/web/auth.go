@@ -188,7 +188,9 @@ func (ws *WebServer) authGateWith(authorized func(string) bool, next http.Handle
 			httpx.WriteJSONError(w, http.StatusUnauthorized, "Unauthorized: session expired, please login again")
 			return
 		}
-		next(w, r)
+		// The session's own token rides in the context, so per-session budgets
+		// (the SSE-ticket cap) can key on it without re-parsing the header.
+		next(w, r.WithContext(context.WithValue(r.Context(), sessionKeyContextKey, token)))
 	}
 }
 
@@ -861,6 +863,13 @@ func (ws *WebServer) handleSubscriptionSettings(w http.ResponseWriter, r *http.R
 	// answer is to report the conflict rather than to pretend the change did not
 	// happen. listener_error carries the reason so the card can show it.
 	listenerErr := ws.bindSubscriberListener(context.Background(), false)
+
+	// Re-apply the resolver's self-name set from what was just saved (v2.8,
+	// audit needs-validation fix): the listener rebind above only moves the
+	// portal port, so without this the RETIRED subscriber domain kept answering
+	// with the public IP and the newly saved one was refused — a locked-out
+	// subscriber could not resolve the very link that would let them re-bind.
+	ws.refreshSelfDomains()
 
 	log.Printf("[Web] Subscription settings saved (domain=%q use_panel_cert=%v enabled=%v port=%d)",
 		normalized.Domain, normalized.UsePanelCertificate, normalized.Enabled, normalized.Port)

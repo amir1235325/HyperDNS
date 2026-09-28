@@ -64,6 +64,37 @@ var groupIconAttrAllowlist = map[string]bool{
 	"id": true, "class": true, "xmlns": true, "aria-label": true, "role": true,
 }
 
+// cssURLRefs returns the argument of every url( … ) in a CSS value: the target
+// with surrounding quotes and whitespace stripped. Matching is case-insensitive
+// because CSS keyword and function names are. A quoted internal reference such
+// as url('#grad') yields "#grad"; an external one yields "https://…" (which the
+// caller rejects). Only url() is inspected — the other attribute values are all
+// numeric path coordinates or colours, and a keyword like `fill="url"` alone is
+// not a reference.
+func cssURLRefs(v string) []string {
+	lower := strings.ToLower(v)
+	var out []string
+	for i := 0; ; {
+		j := strings.Index(lower[i:], "url(")
+		if j < 0 {
+			break
+		}
+		start := i + j + len("url(")
+		rest := v[start:]
+		// An unterminated reference is malformed CSS; hand it back raw so the
+		// caller's external-check sees something rather than nothing.
+		closer := strings.IndexByte(rest, ')')
+		if closer < 0 {
+			out = append(out, strings.Trim(strings.TrimSpace(rest), `"'`))
+			break
+		}
+		target := strings.Trim(strings.TrimSpace(rest[:closer]), `"'`)
+		out = append(out, target)
+		i = start + closer + 1
+	}
+	return out
+}
+
 // sanitizeGroupSVG re-encodes an uploaded SVG through the allowlists. The
 // output is guaranteed well-formed XML containing nothing but allowlisted
 // elements and attributes; on any decode error the upload is rejected.
@@ -106,8 +137,18 @@ func sanitizeGroupSVG(raw []byte) ([]byte, error) {
 					// the allowlist, not a blocklist of the week, decides.
 					return nil, badIcon("the SVG carries a disallowed attribute " + an)
 				}
-				if strings.Contains(a.Value, "url(") && !strings.HasPrefix(strings.TrimSpace(a.Value), "url(#") {
-					return nil, badIcon("the SVG references an external resource via url()")
+				// Every url() in the value must point at an internal fragment.
+				// The check is case-insensitive (CSS is), covers EVERY
+				// occurrence, tolerates quotes/whitespace, and runs on the
+				// post-decode value — so an entity encoding such as &#76;
+				// cannot smuggle "URL(" past it. The previous guard was a
+				// case-sensitive prefix test on the whole value, which is how
+				// fill="URL(https://…)" and a second url() after an internal
+				// one both slipped through (audit finding #5).
+				for _, ref := range cssURLRefs(a.Value) {
+					if !strings.HasPrefix(ref, "#") {
+						return nil, badIcon("the SVG references an external resource via url()")
+					}
 				}
 				if strings.ContainsAny(a.Value, "<>") {
 					return nil, badIcon("the SVG attribute value contains markup characters")

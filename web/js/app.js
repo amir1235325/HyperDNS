@@ -3945,6 +3945,22 @@ function initClientEventListeners() {
       if (res.ok) {
         showToast(isEnforced ? 'Whitelist mode enforced (Only registered clients)' : 'Open public mode activated', 'info');
         loadClients();
+      } else {
+        // The server now persists BEFORE it applies and answers 500 when the
+        // store write fails — an unchecked success here would show a green toast
+        // for a mode change that did not survive to the next boot (v2.8).
+        const body = await res.json().catch(() => ({}));
+        showToast(body.error || 'Could not save the access mode', 'error');
+        // Snap the switch back to whatever the server actually holds, so the UI
+        // never disagrees with a gate that silently stayed where it was.
+        try {
+          const st = await fetch(api('/api/config/access'), { headers: { 'Authorization': 'Bearer ' + authToken } });
+          if (st.ok) {
+            const cfg = await st.json();
+            const enforced = !(cfg.allow_all ?? false);
+            document.getElementById('access-mode-switch').checked = enforced;
+          }
+        } catch (ignore) { /* leave the switch as-is */ }
       }
     } catch (e) {
       showToast('Failed to update access mode', 'error');

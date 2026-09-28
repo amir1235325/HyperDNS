@@ -1,7 +1,7 @@
 # ⚡ HyperDNS — HyperRAIN Standalone SmartDNS & Gaming Gateway
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Release-v2.7.0-00f0ff?style=for-the-badge&logo=rocket" alt="Version">
+  <img src="https://img.shields.io/badge/Release-v2.8.0-00f0ff?style=for-the-badge&logo=rocket" alt="Version">
   <img src="https://img.shields.io/badge/Status-Production--Ready%20Beta-amber?style=for-the-badge" alt="Status">
   <img src="https://img.shields.io/badge/Language-Go%201.26-00ADD8?style=for-the-badge&logo=go" alt="Go">
   <img src="https://img.shields.io/badge/Architecture-Single%20Binary%20(Zero%20CGO)-a855f7?style=for-the-badge" alt="Single Binary">
@@ -14,9 +14,11 @@
   <img src="docs/hyperdns-dashboard.png" alt="HyperDNS dashboard — live telemetry, QPS graph and policy presets" width="880">
 </p>
 
-> [!NOTE]
+> [!IMPORTANT]
 > ### v2.2.0 — Built-In ACME, Whitelist by Default, API v2 & a Real Console
 > Certificates are now **issued by the daemon itself**: an in-process ACME client (RFC 8555) replaces certbot/acme.sh entirely — issuance and daily renewal happen while the service runs, and renewed certificates hot-swap into the live listeners without a restart. **Client access whitelist is on by default**: an unknown source is refused by DNS (with an RFC 8914 Extended DNS Error so the client learns *why*) instead of being served for free. A new versioned **REST API v2** joins v1 (which carries `Deprecation`/`Sunset` headers), and the console can stop, start and uninstall the service. See [CHANGELOG.md](docs/CHANGELOG.md) for the full list.
+>
+> Since v2.6 the dashboard can update itself (v2.8 signs every release bundle with a pinned ed25519 key, and the updater never honours a proxy), the installer asks for the server's public IP on NAT'd hosts, and the resolver answers its own service names so a subscriber whose IP changed can still reach the portal link.
 
 <p align="center">
   <a href="#-quick-installation--deployment">🚀 Install</a> •
@@ -103,7 +105,7 @@ before it installs anything.
 ### Option 1: One-Line Linux Installer (Recommended)
 Run as `root` on Ubuntu 20.04+, Debian 11+, or AlmaLinux/Rocky 8+:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/IzumiRain/HyperDNS/v2.7.0-beta.1/scripts/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/IzumiRain/HyperDNS/v2.8.0-beta.1/scripts/install.sh | sudo bash
 ```
 
 > [!IMPORTANT]
@@ -430,9 +432,13 @@ curl -s -X POST "https://$HOST/api/v2/clients" \
   -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
   -d '{"display_name":"Ali","allowed_ips":["185.10.20.30"],"validity_days":30}'
 
-# Check whether a newer HyperDNS release is published (v2.7)
+# Check whether a newer HyperDNS release is published (v2.6+)
 curl -s "https://$HOST/api/v1/version"  # the running build
 curl -s "https://$HOST/api/update/check" -H "Authorization: Bearer <dashboard-session-token>"
+
+# Apply it from the CLI (v2.8: the bundle must carry a valid ed25519 signature
+# over checksums.txt AND a matching SHA-256 before anything is installed)
+curl -s -X POST "https://$HOST/api/update/apply" -H "Authorization: Bearer <dashboard-session-token>"
 
 # Upload an icon for a custom policy group (SVG ≤ 16 KB or PNG ≤ 64 KB, v2.7)
 curl -s -X PUT "https://$HOST/api/custom-groups/$GROUP_ID/icon" \

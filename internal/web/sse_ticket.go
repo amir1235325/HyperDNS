@@ -24,38 +24,67 @@ import (
 const (
 	sseTicketTTL  = 60 * time.Second
 	sseTicketSize = 16 // 128 bits of entropy
+
+	// maxOutstandingSSETickets bounds how many unconsumed tickets one session
+	// may hold at once (audit needs-validation fix, v2.8). The endpoint is
+	// admin-gated, so this is not an unauthenticated lever — but the panel and
+	// the resolver share one process, so a session hammering the endpoint for
+	// the whole TTL could otherwise grow the store without limit, and every
+	// mint sweeps the store under one mutex. The cap bounds both; a request over
+	// the cap is refused rather than served.
+	maxOutstandingSSETickets = 64
 )
+
+// sessionKeyContextKey is the context key the auth gate uses to carry the
+// caller's session token. A comparable, non-zero pointer type: context lookup
+// keys must not collide across packages.
+var sessionKeyContextKey = &struct{ session string }{}
 
 // sseTicketStore holds outstanding tickets. The mutex is fine at this scale:
 // one ticket per operator tab connecting, not per query.
 type sseTicketStore struct {
-	mu      sync.Mutex
-	tickets map[string]time.Time // value = expiry
+	mu            sync.Mutex
+	tickets       map[string]time.Time // value = expiry
+	ownerByTicket map[string]string    // ticket -> session key (for the cap accounting)
+	byOwner       map[string]int       // session key -> outstanding count
 }
 
 func newSSETicketStore() *sseTicketStore {
-	return &sseTicketStore{tickets: make(map[string]time.Time)}
+	return &sseTicketStore{
+		tickets:       make(map[string]time.Time),
+		ownerByTicket: make(map[string]string),
+		byOwner:       make(map[string]int),
+	}
 }
 
 // mint creates a fresh ticket bound to nothing but itself; the stream handler
 // validates the caller's real credential separately after the redirect-free
 // connect. Tickets are not tokens: they authorize exactly one /events/stream
 // or /api/stream/queries handshake within the TTL and are consumed on use.
-func (s *sseTicketStore) mint() string {
+//
+// owner keys the per-session cap. An owner at maxOutstandingSSETickets gets no
+// new ticket: mint returns "" and the handler answers 429, so one session can
+// never grow the store past the cap the way it could before the cap existed.
+func (s *sseTicketStore) mint(owner string) string {
 	b := make([]byte, sseTicketSize)
 	_, _ = rand.Read(b)
 	ticket := hex.EncodeToString(b)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	// Opportunistic sweep: the map holds at most a handful of entries, but a
-	// swept map is a bounded map regardless of how many tabs were opened.
 	now := time.Now()
+	// Opportunistic sweep: the map holds at most a bounded number of entries,
+	// but a swept map is a bounded map regardless of how many tabs were opened.
 	for k, exp := range s.tickets {
 		if exp.Before(now) {
 			delete(s.tickets, k)
 		}
 	}
+	if n := s.byOwner[owner]; n >= maxOutstandingSSETickets {
+		return ""
+	}
 	s.tickets[ticket] = now.Add(sseTicketTTL)
+	s.byOwner[owner]++
+	s.ownerByTicket[ticket] = owner
 	return ticket
 }
 
@@ -66,12 +95,28 @@ func (s *sseTicketStore) consume(ticket string) bool {
 	exp, ok := s.tickets[ticket]
 	if !ok || exp.Before(time.Now()) {
 		if ok {
-			delete(s.tickets, ticket)
+			s.drop(ticket)
 		}
 		return false
 	}
-	delete(s.tickets, ticket)
+	s.drop(ticket)
 	return true
+}
+
+// drop removes a ticket and takes one off its owner's outstanding count. The
+// caller holds the mutex.
+func (s *sseTicketStore) drop(ticket string) {
+	delete(s.tickets, ticket)
+	owner, ok := s.ownerByTicket[ticket]
+	if !ok {
+		return
+	}
+	delete(s.ownerByTicket, ticket)
+	if n := s.byOwner[owner]; n > 1 {
+		s.byOwner[owner] = n - 1
+	} else {
+		delete(s.byOwner, owner)
+	}
 }
 
 // handleSSETicket exchanges a Bearer-authenticated request for a one-time
@@ -88,7 +133,22 @@ func (ws *WebServer) handleSSETicket(w http.ResponseWriter, r *http.Request) {
 	// authGate with allowQueryToken=false keeps the query-string path out of
 	// the exchange too.
 	_ = r.Body.Close()
-	ticket := ws.sseTickets.mint()
+	// The cap is per session key: the Bearer token the handler was reached with
+	// already proved it, and a dashboard never needs more than a couple of tabs.
+	sessionKey := ""
+	if v := r.Context().Value(sessionKeyContextKey); v != nil {
+		if s, ok := v.(string); ok {
+			sessionKey = s
+		}
+	}
+	if sessionKey == "" {
+		sessionKey = r.RemoteAddr
+	}
+	ticket := ws.sseTickets.mint(sessionKey)
+	if ticket == "" {
+		httpx.WriteJSONError(w, http.StatusTooManyRequests, "too many outstanding stream tickets; open fewer dashboard tabs or wait for them to expire")
+		return
+	}
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(map[string]any{

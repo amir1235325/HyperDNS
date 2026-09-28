@@ -26,11 +26,11 @@ func (g *recordingDoHGate) SetDoHTokens(t []string) {
 // the running DoH handler, not only persist it, so a first-enabled gate closes
 // and a revoked token stops working without waiting for a restart.
 func TestConfigAccessAppliesDoHTokensToLiveGate(t *testing.T) {
-	_, db, cleanup := setupTestWebServer(t)
+	ws, _, cleanup := setupTestWebServer(t)
 	defer cleanup()
 
 	gate := &recordingDoHGate{}
-	ws := &WebServer{db: db, dohHandler: gate}
+	ws.dohHandler = gate
 
 	post := func(body string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodPost, "/api/config/access", strings.NewReader(body))
