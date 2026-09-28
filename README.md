@@ -44,6 +44,7 @@
 | **[API.md](docs/API.md)** | REST API v1 (deprecated) and v2, with Python / Node.js / cURL samples. |
 | **[docs/PRESET_CATALOG.md](docs/PRESET_CATALOG.md)** | The full 171+ preset catalog, by category. |
 | **[CHANGELOG.md](docs/CHANGELOG.md)** | Release history and the fix behind each one. |
+| **[docs/RELEASING.md](docs/RELEASING.md)** | Versioning policy, the stable/beta channels, and how the in-dashboard updater decides what to offer. |
 | **[README.fa.md](README.fa.md)** | راهنمای فارسی. |
 
 ## 📖 Overview
@@ -117,12 +118,18 @@ v2.8 every release bundle is **ed25519-signed**, and the in-dashboard updater
 installs only signed final releases — install a pre-release by hand with
 `install.sh` if you want it.
 
-The history note, so the tag list makes sense: `v2.2.0-beta.1` was the release
-that took off and remains the pinned stable line; the `2.3`–`2.6` betas that
-followed it were published before this policy existed, so some of them initially
-carried the wrong prerelease flag. They have been corrected to prerelease and
-the numbers themselves are unchanged — nothing was deleted, and every existing
-link keeps working.
+**Where the update number comes from.** The dashboard does **not** read GitHub's
+*Latest* release. It fetches `version.json` from the repository's **default
+branch** (`main`), compares that number with the version this build embeds, then
+resolves the release whose **tag matches that number exactly**. So the update
+feed moves on exactly one event — `main`'s `version.json` bumping to a final
+number, followed by that tag — and a `-beta` tag never satisfies it. Practical
+consequence for this repository today: `main` carries `2.2.0`, so a v2.6/v2.8
+build correctly reports **up to date** even though newer beta tags exist; the
+feed starts moving the day the stable line is cut on `main`.
+
+Full detail — channels, the updater's decision order, and the tag-history note —
+lives in **[docs/RELEASING.md](docs/RELEASING.md)**.
 
 ---
 
