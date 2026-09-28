@@ -231,8 +231,14 @@ They are the reason several classes of issue are "by design" rather than bugs.
   (`ServerDNS`) filtered by a dedicated display validator because it is shown as
   an address to type into a console.
 - **Operator CSS is sanitised** before it reaches a subscriber: `<style>` and
-  `<script>` escaped, `@import` stripped, external `url()` removed. A reseller's
-  "branding" cannot become a data-exfiltration surface.
+  `<script>` escaped, `@import` stripped, external `url()` removed — including
+  case-varied and escape-obfuscated spellings, every occurrence in a value, not
+  just the prefix (v2.8). A reseller's "branding" cannot become a
+  data-exfiltration surface.
+- **Uploaded icons are re-encoded, not filtered**: an SVG upload is decoded and
+  emitted again through an element/attribute allowlist, so scripts, handlers,
+  `foreignObject`, `use`/`image` and external references simply do not exist in
+  the stored bytes. PNGs are magic-byte and dimension checked (v2.7).
 - **Paths are cleaned mux-style before the admin-prefix check**, so a
   dot-segment traversal cannot escape the hidden namespace.
 - **Forwarding headers are only believed from a trusted local/private hop**, so
@@ -241,6 +247,26 @@ They are the reason several classes of issue are "by design" rather than bugs.
 - **Bounded request bodies** on every JSON endpoint, bounded connection counts on
   every listener, and timeouts on headers and idle connections.
 
+### The update channel (v2.8)
+
+- **Every release bundle is signed.** The dashboard updater resolves the release
+  whose **tag matches the number in the default branch's `version.json`**, then
+  verifies a detached **ed25519 signature** over the raw `checksums.txt` bytes
+  against a key **pinned in the binary** — the private half lives only in the
+  release workflow's secret. A bare SHA-256 compare between two same-origin
+  files is a self-consistency test, not origin authentication; the signature is
+  what makes the expected hash trustworthy.
+- **An unsigned or wrongly-signed bundle is refused** before anything is written,
+  and the downloaded file is re-read and re-hashed immediately before the atomic
+  swap, so the bytes that get executed are provably the bytes that were verified.
+- **No proxy is honoured** by the updater: a root-executed update must not be
+  walkable into a locally-trusted TLS-intercepting middlebox.
+- **The data files are never rewritten by an update.** They are snapshotted to
+  `backups/pre-update-<timestamp>/` first, and only the binary is replaced.
+- **Operator writes are atomic (v2.8)**: the read-gate-save of a client record
+  runs inside one store transaction in all nine paths, so a subscriber bind
+  committing concurrently can no longer be erased by an operator edit — closing
+  the lost-update class.
 ### DNS-specific
 
 - **Client access whitelist ships on (v2.2.0).** An unknown source is refused
