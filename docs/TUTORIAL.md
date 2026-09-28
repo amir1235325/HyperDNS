@@ -35,7 +35,8 @@
 13. [The REST API and Swagger](#13-the-rest-api-and-swagger)
 14. [The `hdns` console: status, flush, stop, start, uninstall](#14-the-hdns-console-status-flush-stop-start-uninstall)
 15. [Backup and restore](#15-backup-and-restore)
-16. [Troubleshooting](#16-troubleshooting)
+16. [Updating HyperDNS from the dashboard](#16-updating-hyperdns-from-the-dashboard)
+17. [Troubleshooting](#17-troubleshooting)
 
 ---
 
@@ -569,7 +570,50 @@ documented in [SECURITY.md](SECURITY.md).
 
 ---
 
-## 16. Troubleshooting
+## 16. Updating HyperDNS from the dashboard
+
+Since v2.6 the dashboard can update the daemon itself. When a newer **stable**
+release is published, a badge appears next to the version in the header; clicking
+it opens a progress modal and the whole update runs without you touching SSH.
+
+**What the badge means.** The check reads `version.json` from the project's
+default branch and compares it with the version your build embeds — so it offers
+only what the project has actually released as stable, never a beta tag. If
+nothing is offered, your install is the newest thing the project has shipped on
+that line; see [RELEASING.md](RELEASING.md) for how the numbers move.
+
+**What the update does, in order.** Downloads the release binary for your
+architecture → verifies its SHA-256 against the release's `checksums.txt` →
+verifies the **ed25519 signature** over that checksums file (v2.8; the key is
+pinned in the binary, so a bundle nobody signs is refused no matter how it
+arrived) → backs up `data.db`, `master.key` and `config.json` into
+`/opt/hyperdns/backups/pre-update-<timestamp>/` → swaps the binary atomically
+(the old one is kept as `hyperdns.bak` for rollback) → restarts the service.
+Your clients, subscribers, admin password, portal theme, group icons and rules
+are untouched by design.
+
+**Requirements.** Linux under systemd (the service restarts itself), outbound
+HTTPS to `github.com`, and a release published **signed** — installs from older
+lines update fine, but a release predating signing can only be installed with
+`install.sh`.
+
+**If it fails.** The modal names the step. A verification failure installs
+nothing and restarts nothing; a swap failure leaves your running binary in
+place, with the downloaded file cleaned up. Roll back manually by restoring the
+`pre-update-*` backup if a release misbehaves.
+
+The same thing from the CLI (for automation):
+
+```bash
+curl -s "https://<host>:<panel-port>/api/update/check" \
+  -H "Authorization: Bearer <dashboard-session-token>"
+curl -s -X POST "https://<host>:<panel-port>/api/update/apply" \
+  -H "Authorization: Bearer <dashboard-session-token>"
+```
+
+---
+
+## 17. Troubleshooting
 
 | Symptom | Check |
 | :--- | :--- |
