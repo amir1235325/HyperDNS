@@ -98,9 +98,36 @@ usual one), **443**, or **8443**, free it first or the daemon cannot bind that
 listener at start. The installer now lists these ports and warns about conflicts
 before it installs anything.
 
+### 🔢 Versioning & release policy
+
+This project follows **[SemVer](https://semver.org)** — `MAJOR.MINOR.PATCH`:
+
+- **MINOR** bump (`2.8.0` → `2.9.0`) for new features.
+- **PATCH** bump (`2.8.0` → `2.8.1`) for backwards-compatible fixes.
+- **MAJOR** bump for a breaking change (none so far; `2.x` is one line).
+- A pre-release tag (`v2.9.0-beta.1`) precedes the final `v2.9.0` of the same
+  number — it is never *after* it.
+
+**Two channels, one source of truth.** `version.json` in the repository is what
+every build embeds and what the dashboard's update check reads. Releases
+published from `main` are the stable line; tags carrying a `-beta` channel are
+published as **GitHub prereleases** and never take the *Latest* badge, so the
+README's install one-liner and new users keep landing on the stable line. Since
+v2.8 every release bundle is **ed25519-signed**, and the in-dashboard updater
+installs only signed final releases — install a pre-release by hand with
+`install.sh` if you want it.
+
+The history note, so the tag list makes sense: `v2.2.0-beta.1` was the release
+that took off and remains the pinned stable line; the `2.3`–`2.6` betas that
+followed it were published before this policy existed, so some of them initially
+carried the wrong prerelease flag. They have been corrected to prerelease and
+the numbers themselves are unchanged — nothing was deleted, and every existing
+link keeps working.
+
 ---
 
 ## 🚀 Quick Installation & Deployment
+
 
 ### Option 1: One-Line Linux Installer (Recommended)
 Run as `root` on Ubuntu 20.04+, Debian 11+, or AlmaLinux/Rocky 8+:
