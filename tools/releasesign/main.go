@@ -6,17 +6,16 @@
 // the raw 32-byte ed25519 key.
 //
 // The signature is detached: it covers exactly the bytes of checksums.txt as
-// published. The release workflow raw-base64's it into a file, and the daemon
-// reads the same bytes from the asset response's X-HyperDNS-Checksums-Signature
-// header. Signing a re-serialisation instead of the published bytes would break
-// this, so nothing here may reformat the input.
+// published, and is published as the release asset checksums.sig (GitHub passes
+// no custom response headers through its asset CDN, so a header would be
+// dropped). Signing a re-serialisation instead of the published bytes would
+// break verification, so nothing here may reformat the input.
 //
-//	sign  -in checksums.txt -header out.sig   # writes the raw base64 signature
-//	verify -in checksums.txt -header out.sig   # re-verifies a produced file
+//	sign  -in checksums.txt -header checksums.sig             # writes the base64 signature
+//	verify -in checksums.txt -header checksums.sig            # verifies against the pinned key
 package main
 
 import (
-	"bufio"
 	"crypto/ed25519"
 	"encoding/base64"
 	"flag"
@@ -28,10 +27,19 @@ import (
 )
 
 func main() {
-	in := flag.String("in", "dist/checksums.txt", "the checksums manifest")
-	headerFile := flag.String("header", "dist/checksums.sig", "the detached signature file")
-	flag.Parse()
-	cmd := flag.Arg(0)
+	// The verb comes FIRST so the sub-command reads naturally and the flags that
+	// follow it are parsed without the sub-command being mistaken for a path:
+	//   releasesign sign -in checksums.txt -header checksums.sig
+	//   releasesign verify -in checksums.txt -header checksums.sig
+	fs := flag.NewFlagSet("releasesign", flag.ExitOnError)
+	in := fs.String("in", "dist/checksums.txt", "the checksums manifest")
+	headerFile := fs.String("header", "dist/checksums.sig", "the detached signature file")
+	if len(os.Args) < 2 {
+		fmt.Fprintln(os.Stderr, "usage: releasesign [-in checksums.txt] [-header checksums.sig] sign|verify")
+		os.Exit(2)
+	}
+	cmd := os.Args[1]
+	_ = fs.Parse(os.Args[2:])
 
 	raw, err := os.ReadFile(*in)
 	if err != nil {
@@ -88,5 +96,3 @@ func decodeKey(b64 string) (ed25519.PrivateKey, error) {
 	}
 	return ed25519.PrivateKey(raw), nil
 }
-
-var _ = bufio.NewReader // reserved for a future streaming verify mode

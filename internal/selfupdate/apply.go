@@ -87,11 +87,11 @@ func (u *Updater) apply(ctx context.Context) error {
 		return err
 	}
 
-	// 2. Fetch checksums.txt and verify the release signature over its raw
-	//    bytes BEFORE parsing anything. Only then is the expected hash worth
-	//    trusting — both artifacts come from the same origin, so without the
-	//    signature the hash comparison is an unauthenticated self-consistency
-	//    test, not origin authentication.
+	// 2. Fetch checksums.txt AND its detached signature (a release asset — the
+	//    release host passes no custom headers), verify the signature over the
+	//    raw bytes, and only then parse the hash. Both files come from the same
+	//    origin, so without the signature the hash comparison is an
+	//    unauthenticated self-consistency test, not origin authentication.
 	u.setProgress("verify", "Fetching and verifying signed checksums…", 15)
 	wantSum, err := u.expectedSum(ctx, sumURL, binName)
 	if err != nil {
@@ -170,7 +170,8 @@ func (u *Updater) resolveAssets(ctx context.Context, binName string) (binURL, su
 
 	// The list is newest-first; take the newest NON-draft release whose tag is
 	// exactly the target version (a beta channel suffix is accepted only when
-	// the target itself names that channel), and which carries both assets.
+	// the target itself names that channel), and which carries the binary and
+	// the signed checksums pair.
 	for _, rel := range releases {
 		if rel.Draft {
 			continue
@@ -178,6 +179,7 @@ func (u *Updater) resolveAssets(ctx context.Context, binName string) (binURL, su
 		if !tagMatchesTarget(rel.TagName, st.Latest) {
 			continue
 		}
+		binURL, sumURL = "", ""
 		for _, a := range rel.Assets {
 			switch a.Name {
 			case binName:
@@ -216,7 +218,36 @@ func (u *Updater) expectedSum(ctx context.Context, sumURL, binName string) (stri
 	if err != nil {
 		return "", err
 	}
-	if err := verifyChecksumsSignature(body, resp.Header.Get(checksumsSignatureHeader)); err != nil {
+	// The signature travels as a release ASSET next to checksums.txt, because a
+	// release host (GitHub's CDN) passes no custom response headers through. A
+	// header is still honoured when present, so a self-hosted mirror can carry
+	// it that way instead. Both routes mean an unsigned bundle is refused.
+	sigValue := resp.Header.Get(checksumsSignatureHeader)
+	if sigValue == "" {
+		sigAssetURL := strings.Replace(sumURL, "checksums.txt", checksumsSignatureAsset, 1)
+		if sigAssetURL == sumURL {
+			return "", fmt.Errorf("the release carries no checksums signature (refusing an unverified update)")
+		}
+		sigReq, err := http.NewRequestWithContext(ctx, http.MethodGet, sigAssetURL, nil)
+		if err != nil {
+			return "", err
+		}
+		sigResp, err := u.client.Do(sigReq)
+		if err != nil {
+			return "", fmt.Errorf("fetch %s: %w", checksumsSignatureAsset, err)
+		}
+		if sigResp.StatusCode != http.StatusOK {
+			sigResp.Body.Close()
+			return "", fmt.Errorf("the release carries no %s asset (HTTP %d; refusing an unverified update)", checksumsSignatureAsset, sigResp.StatusCode)
+		}
+		rawSig, err := io.ReadAll(io.LimitReader(sigResp.Body, 8<<10))
+		sigResp.Body.Close()
+		if err != nil {
+			return "", err
+		}
+		sigValue = strings.TrimSpace(string(rawSig))
+	}
+	if err := verifyChecksumsSignature(body, sigValue); err != nil {
 		return "", err
 	}
 	for _, line := range strings.Split(string(body), "\n") {

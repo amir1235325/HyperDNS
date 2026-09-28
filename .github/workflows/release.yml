@@ -120,9 +120,13 @@ jobs:
       # against itself). The private half comes from the RELEASE_SIGNING_KEY
       # Actions secret as base64 of the raw 32-byte ed25519 key; the public half
       # is pinned in internal/selfupdate (ReleasePubKey), which refuses any
-      # bundle whose checksums signature does not verify. The signature is a
-      # detached header the daemon reads from the asset response, so it covers
-      # exactly the published bytes with no re-serialisation on either side.
+      # bundle whose checksums signature does not verify.
+      #
+      # The signature is published as a release ASSET (checksums.sig), not a
+      # response header: GitHub serves release assets from its CDN and passes
+      # none of our headers through, so a header would be silently dropped and
+      # every update refused. It covers exactly the bytes of checksums.txt as
+      # published — no re-serialisation on either side.
       - name: Sign the checksums manifest
         env:
           RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
@@ -132,11 +136,15 @@ jobs:
             exit 1
           fi
           go run ./tools/releasesign sign --in dist/checksums.txt --header dist/checksums.sig
+          cat dist/checksums.sig
 
-      # The signature must be transported as an HTTP response header for the
-      # asset download, so create the release describing it and let the upload
-      # step attach the .sig file to the same release; the daemon-side verifier
-      # reads X-HyperDNS-Checksums-Signature (tools/releasesign knows that name).
+      # The signature asset must reach the release: files: dist/* above already
+      # globs it in, and softprops uploads everything matched. Verify locally
+      # that what we are about to publish actually verifies against the key the
+      # binaries were built with — a failed release is recoverable, a published
+      # unverifiable one bricks every self-update.
+      - name: Verify the bundle signature
+        run: go run ./tools/releasesign verify -in dist/checksums.txt -header dist/checksums.sig
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')

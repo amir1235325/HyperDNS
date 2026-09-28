@@ -47,7 +47,7 @@ import (
 // To rotate the release identity: generate a fresh keypair, put the private half
 // in the RELEASE_SIGNING_KEY secret, and replace the base64 below — the public
 // key is the 32-byte raw ed25519 key, not a PEM/SPKI wrapper.
-var ReleasePubKey = mustDecodeKey("satTvDtOhSDCypzJ2DfsQtGSpUJrkJgEpu3yrfFFTeI=")
+var ReleasePubKey = mustDecodeKey("kbPBMII0wuIGvhca5hnB1+LmNJWgGZ6ZcncEBw0qRmE=")
 
 func mustDecodeKey(b64 string) ed25519.PublicKey {
 	raw, err := base64.StdEncoding.DecodeString(b64)
@@ -57,11 +57,18 @@ func mustDecodeKey(b64 string) ed25519.PublicKey {
 	return ed25519.PublicKey(raw)
 }
 
-// checksumsSignatureHeader carries the detached signature over the checksums.txt
-// bytes, emitted by the release workflow. It is a header rather than a second
-// file so the signature covers exactly the bytes that were verified: any
-// normalisation on both sides would break the signature, and the header is
-// transported verbatim by HTTP.
+// checksumsSignatureAsset is the release asset that carries the detached
+// signature over checksums.txt's bytes. It is a SEPARATE FILE, not a response
+// header: GitHub Releases serves assets from its CDN and passes through only its
+// own headers, so any X-HyperDNS-* we sent would simply be dropped on the floor
+// and every update would be refused. A file rides alongside checksums.txt on the
+// same release and is fetched the same way.
+const checksumsSignatureAsset = "checksums.sig"
+
+// checksumsSignatureHeader is the response-header name a future self-hosted
+// release host could use to carry the same signature (kept so a mirror or an
+// intranet origin does not have to publish two files). It is only consulted when
+// the asset itself is absent.
 const checksumsSignatureHeader = "X-HyperDNS-Checksums-Signature"
 
 // verifyChecksumsSignatureWith is the parameterised core of the gate, so a test
