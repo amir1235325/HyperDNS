@@ -478,6 +478,13 @@ if [ -n "${FRESH_CONFIG_SOURCE}" ]; then
     sed -i "s|\"admin_password\": \"[^\"]*\"|\"admin_password\": \"${GENERATED_ADMIN_PASSWORD}\"|" "${INSTALL_DIR}/config.json"
     sed -i "s|\"api_key\": \"[^\"]*\"|\"api_key\": \"${GENERATED_API_KEY}\"|" "${INSTALL_DIR}/config.json"
 
+    # Print the generated password the MOMENT it is set, not only in the closing
+    # banner: the banner sits after the service health check, and a fail-closed
+    # start (a configured domain whose certificate cannot be issued yet) exits
+    # before it — which silently lost the operator's only copy of the password
+    # (found in the v2.8 container install test).
+    echo -e "  ${BOLD}Generated admin password (save it now): ${YELLOW}${GENERATED_ADMIN_PASSWORD}${NC}"
+
     # Pin the confirmed public IP into the fresh config so the daemon uses it
     # verbatim instead of auto-detecting (which, on a NAT'd/Iran-routed box,
     # returns the wrong country's address and breaks SSL + subscriber links).
