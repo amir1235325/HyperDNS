@@ -274,12 +274,38 @@ echo -e "  ${GREEN}✓ Architecture detected: ${ARCH} (${BIN_ARCH})${NC}"
 # beta installer pulling from it silently fetches the older stable binary and
 # the install fails deep in the v2.2.0 flow. Both URLs derive from the single
 # ref so the binary and the auxiliary files can never disagree.
-HYPERDNS_REF="${HYPERDNS_REF:-v2.5.0-beta.1}"
+# Per-release constant: the ref this installer was shipped from. The README
+# one-liner pins it to the tag the user is installing, so the binary, the config
+# template and version.json can never disagree with the installer itself.
+# RELEASE CHECKLIST: bump this to the new tag on every release.
+HYPERDNS_REF="${HYPERDNS_REF:-v2.8.0-beta.1}"
 RAW_BASE="https://raw.githubusercontent.com/IzumiRain/HyperDNS/${HYPERDNS_REF}"
 RELEASE_BASE="https://github.com/IzumiRain/HyperDNS/releases/download/${HYPERDNS_REF}"
 
 DL_BIN="$(mktemp /tmp/hyperdns-bin.XXXXXX)"
 if curl -fL --retry 3 --connect-timeout 10 "${RELEASE_BASE}/hyperdns-linux-${BIN_ARCH}" -o "${DL_BIN}" 2>/dev/null && [ -s "${DL_BIN}" ]; then
+    # Verify the downloaded binary against the release's published checksums
+    # (audit hardening note: the installer used to trust the TLS stream alone).
+    # The comparison is exact-match on the recorded digest — a missing or
+    # mismatching checksums.txt is a hard failure, not a warning.
+    SUM_TMP="$(mktemp /tmp/hyperdns-sum.XXXXXX)"
+    if curl -fL --retry 3 --connect-timeout 10 "${RELEASE_BASE}/checksums.txt" -o "${SUM_TMP}" 2>/dev/null && [ -s "${SUM_TMP}" ]; then
+        WANT_SUM="$(awk -v n="hyperdns-linux-${BIN_ARCH}" '$2 == n {print $1}' "${SUM_TMP}")"
+        GOT_SUM="$(sha256sum "${DL_BIN}" | awk '{print $1}')"
+        if [ -z "${WANT_SUM}" ] || [ "${GOT_SUM}" != "${WANT_SUM}" ]; then
+            echo -e "${RED}[Error] Binary checksum mismatch against the release's checksums.txt.${NC}"
+            echo -e "${RED}  expected: ${WANT_SUM:-<missing>}${NC}"
+            echo -e "${RED}  got     : ${GOT_SUM}${NC}"
+            rm -f "${DL_BIN}" "${SUM_TMP}"
+            exit 1
+        fi
+        echo -e "  ${GREEN}✓ Binary checksum verified against the release manifest${NC}"
+    else
+        echo -e "${RED}[Error] Could not download the release checksums.txt (refusing an unverifiable binary).${NC}"
+        rm -f "${DL_BIN}" "${SUM_TMP}"
+        exit 1
+    fi
+    rm -f "${SUM_TMP}"
     chmod +x "${DL_BIN}"
     SRC_BIN="${DL_BIN}"
     echo -e "  ${GREEN}✓ Downloaded release binary (${BIN_ARCH}): $(( $(stat -c%s "${DL_BIN}" 2>/dev/null || echo 0) / 1024 / 1024 )) MB${NC}"
@@ -340,7 +366,7 @@ if [ -f "${INSTALL_DIR}/hyperdns" ] || [ -f "${INSTALL_DIR}/config.json" ] || [ 
     echo -e "${YELLOW}${BOLD}\u250c${NC}"
     echo -e "${YELLOW}│ SAFE INSTALL — an existing HyperDNS installation was detected${NC}"
     echo -e "${YELLOW}│ • Installed Version : ${CYAN}${PREV_VERSION}${NC}"
-    echo -e "${YELLOW}│ • Target Version    : ${GREEN}v2.2.0 (this package)${NC}"
+    echo -e "${YELLOW}│ • Target Version    : ${GREEN}${HYPERDNS_REF} (this package)${NC}"
     echo -e "${YELLOW}│ • Mode              : ${GREEN}Fresh install — old data ARCHIVED, then REPLACED${NC}"
     echo -e "${YELLOW}\u2514${NC}"
     echo ""
