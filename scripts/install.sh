@@ -278,7 +278,7 @@ echo -e "  ${GREEN}✓ Architecture detected: ${ARCH} (${BIN_ARCH})${NC}"
 # one-liner pins it to the tag the user is installing, so the binary, the config
 # template and version.json can never disagree with the installer itself.
 # RELEASE CHECKLIST: bump this to the new tag on every release.
-HYPERDNS_REF="${HYPERDNS_REF:-v2.8.0-beta.1}"
+HYPERDNS_REF="${HYPERDNS_REF:-v2.7.0-beta.1}"
 RAW_BASE="https://raw.githubusercontent.com/IzumiRain/HyperDNS/${HYPERDNS_REF}"
 RELEASE_BASE="https://github.com/IzumiRain/HyperDNS/releases/download/${HYPERDNS_REF}"
 
